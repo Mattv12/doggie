@@ -106,6 +106,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "survey",
         "describe what you see",
     )
+    IDENTITY_QUERY_PATTERNS = (
+        "what is my name",
+        "what's my name",
+        "do you know my name",
+        "who am i",
+        "do you remember me",
+        "what do you remember about me",
+    )
 
     def __init__(self, *args,
             too_close: int = TOO_CLOSE_DISTANCE,
@@ -182,6 +190,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.memory = DoggieMemory()
         self._last_user_text = ""
         self._last_visual_query = False
+        self._last_identity_query = False
 
         # Wake word fix: the library requires the transcription to EXACTLY
         # equal a wake word, so any background noise or extra words defeats
@@ -325,6 +334,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.action_flow.set_status(ActionStatus.THINK)
         self._last_user_text = text or ""
         self._last_visual_query = self._is_visual_query(self._last_user_text)
+        self._last_identity_query = self._is_identity_query(self._last_user_text)
         self.memory.note_interaction(self._last_user_text)
         self._extract_owner_cues(self._last_user_text)
 
@@ -346,6 +356,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 actions = ['stop']
         else:
             actions = ['stop']
+        actions = self._filter_actions_for_context(actions)
         self.action_flow.add_action(*actions)
 
         if self._last_visual_query and response_text:
@@ -737,6 +748,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return ''
         self._last_user_text = text
         self._last_visual_query = self._is_visual_query(text)
+        self._last_identity_query = self._is_identity_query(text)
         # attach a fresh battery reading to every round as sensor context
         volts, pct = self.read_battery()
         if volts is not None:
@@ -795,6 +807,30 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def _is_visual_query(cls, text: str) -> bool:
         normalized = cls._normalize_phrase(text)
         return any(pattern in normalized for pattern in cls.VISUAL_QUERY_PATTERNS)
+
+    @classmethod
+    def _is_identity_query(cls, text: str) -> bool:
+        normalized = cls._normalize_phrase(text)
+        return any(pattern in normalized for pattern in cls.IDENTITY_QUERY_PATTERNS)
+
+    def _filter_actions_for_context(self, actions: list[str]) -> list[str]:
+        filtered = list(actions)
+        normalized = self._normalize_phrase(self._last_user_text)
+        explicit_face_learning = any(
+            phrase in normalized
+            for phrase in (
+                "learn my face",
+                "remember my face",
+                "remember what i look like",
+                "scan my face",
+                "look at my face",
+            )
+        )
+        if self._last_identity_query and not explicit_face_learning:
+            filtered = [action for action in filtered if action != "learn my face"]
+            if not filtered:
+                filtered = ["stop"]
+        return filtered
 
     def _extract_owner_cues(self, text: str) -> None:
         normalized = self._normalize_phrase(text)

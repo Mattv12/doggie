@@ -72,6 +72,9 @@ sudo python3 -m custom_dog.main profile active
 sudo python3 -m custom_dog.main action sit
 sudo python3 -m custom_dog.main action bark
 sudo python3 -m custom_dog.main action wag-tail
+sudo python3 -m custom_dog.main respond "sit down"
+sudo python3 -m custom_dog.main respond "what's your battery"
+sudo python3 -m custom_dog.main listen
 ```
 
 If the battery is low, movement commands are blocked unless you deliberately
@@ -86,6 +89,7 @@ sudo python3 -m custom_dog.main action sit --force
 The service accepts these environment variables:
 
 - `DOGGIE_REPO_DIR`: repo path, default `/home/matt/pidog`
+- `DOGGIE_REPO_OWNER`: repo owner used for `git pull`, default detected from the repo directory
 - `DOGGIE_BRANCH`: branch to pull, default `main`
 - `DOGGIE_NETWORK_TIMEOUT`: seconds to wait for internet, default `20`
 - `DOGGIE_PULL_TIMEOUT`: seconds allowed for `git pull`, default `25`
@@ -101,4 +105,21 @@ For the most battery-efficient boot, use:
 
 ```ini
 Environment=DOGGIE_BOOT_ARGS=--profile sleep
+```
+
+## Companion Mode
+
+`custom_dog.main` now has a lightweight custom companion layer for fast testing.
+It does not require the full upstream GPT voice assistant stack.
+
+- `respond "..."` parses a phrase into speech and actions once
+- `listen` starts a simple interactive loop from the terminal
+- low battery still blocks movement-heavy commands
+
+Examples:
+
+```bash
+sudo python3 -m custom_dog.main respond "hello doggie"
+sudo python3 -m custom_dog.main respond "move forward"
+sudo python3 -m custom_dog.main listen
 ```

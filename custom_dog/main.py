@@ -15,6 +15,7 @@ from time import sleep
 
 from pidog import Pidog
 
+from .companion import build_response, execute_plan
 from .config import DEFAULT_ACTION_SPEED, POWER_PROFILES
 from .power import apply_profile, choose_boot_profile, get_battery_state
 
@@ -135,6 +136,56 @@ def status(args: argparse.Namespace) -> int:
     return 0
 
 
+def respond(args: argparse.Namespace) -> int:
+    with dog_session() as dog:
+        battery = get_battery_state(dog)
+        plan = build_response(args.text, battery)
+        execute_plan(
+            dog,
+            plan,
+            action_speed=args.speed,
+            rest_speed=args.speed,
+            volume=args.volume,
+        )
+
+    if plan.speech:
+        print(plan.speech)
+    if plan.actions:
+        print(f"actions={','.join(plan.actions)}")
+    return 0
+
+
+def listen(args: argparse.Namespace) -> int:
+    print("doggie listener ready; type commands and press Enter. Type 'quit' to stop.")
+    while True:
+        try:
+            text = input("doggie> ")
+        except EOFError:
+            print()
+            return 0
+        except KeyboardInterrupt:
+            print()
+            return 0
+
+        with dog_session() as dog:
+            battery = get_battery_state(dog)
+            plan = build_response(text, battery)
+            execute_plan(
+                dog,
+                plan,
+                action_speed=args.speed,
+                rest_speed=args.speed,
+                volume=args.volume,
+            )
+
+        if plan.speech:
+            print(plan.speech)
+        if plan.actions:
+            print(f"actions={','.join(plan.actions)}")
+        if plan.stop:
+            return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Custom PiDog command runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -173,6 +224,17 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="check basic runtime status")
     status_parser.add_argument("--battery", action="store_true", help="also read PiDog battery voltage")
     status_parser.set_defaults(func=status)
+
+    respond_parser = subparsers.add_parser("respond", help="parse text into custom dog behavior")
+    respond_parser.add_argument("text", help="command or phrase for the dog")
+    respond_parser.add_argument("--speed", type=int, default=DEFAULT_ACTION_SPEED)
+    respond_parser.add_argument("--volume", type=int, default=80)
+    respond_parser.set_defaults(func=respond)
+
+    listen_parser = subparsers.add_parser("listen", help="interactive custom command loop")
+    listen_parser.add_argument("--speed", type=int, default=DEFAULT_ACTION_SPEED)
+    listen_parser.add_argument("--volume", type=int, default=80)
+    listen_parser.set_defaults(func=listen)
 
     return parser
 

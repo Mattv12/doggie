@@ -30,6 +30,7 @@ Issues = "https://github.com/sunfounder/pidog/issues"
 
 [tool.setuptools]
 packages = [
+  "custom_dog",
   "pidog",
 ]
 

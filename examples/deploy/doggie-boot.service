@@ -4,15 +4,15 @@ Wants=network-online.target
 After=network-online.target sound.target
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 User=root
 WorkingDirectory=/home/matt/pidog
 ExecStart=/bin/bash /home/matt/pidog/scripts/doggie_boot.sh
-Restart=always
-RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=LOGNAME=matt
 Environment=DOGGIE_REPO_DIR=/home/matt/pidog
+Environment=DOGGIE_REPO_OWNER=matt
 Environment=DOGGIE_BRANCH=main
 Environment=DOGGIE_NETWORK_TIMEOUT=20
 Environment=DOGGIE_PULL_TIMEOUT=25

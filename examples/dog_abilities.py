@@ -163,7 +163,10 @@ class AbilitiesMixin:
         self._head_arousal_until = time.time() + seconds
         if toward_sound and not self.any_mode_on():
             try:
-                yaw = self._direction_to_yaw(self.dog.ears.read())
+                yaw = getattr(self, "_last_wake_yaw", None)
+                wake_age = time.time() - getattr(self, "_last_wake_direction_at", 0.0)
+                if yaw is None or wake_age > 2.0:
+                    yaw = self._direction_to_yaw(self.dog.ears.read())
                 if yaw is not None:
                     self._sound_yaw = yaw
                     self.dog.head_move([[yaw, 0, 0]],

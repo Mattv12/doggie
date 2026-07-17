@@ -81,7 +81,27 @@ KEYBOARD_ENABLE = sys.stdin.isatty()
 
 # Enable wake word
 WAKE_ENABLE = True
-WAKE_WORD = ["hey doggie", "hey doggy", "hey dog", "hay doggie", "hay doggy", "a doggie", "a doggy", "hey dougie", "hey duggy", "okay doggie", "okay doggy"]
+WAKE_WORD = [
+    "hey doggie",
+    "hey doggy",
+    "hey dog",
+    "hi doggie",
+    "hi doggy",
+    "hello doggie",
+    "hello doggy",
+    "okay doggie",
+    "okay doggy",
+    "ok doggie",
+    "ok doggy",
+    "yo doggie",
+    "yo doggy",
+    "hay doggie",
+    "hay doggy",
+    "a doggie",
+    "a doggy",
+    "hey dougie",
+    "hey duggy",
+]
 # Set wake word answer, set empty to disable
 ANSWER_ON_WAKE = "Ready"
 

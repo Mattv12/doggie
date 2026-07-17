@@ -9,6 +9,7 @@ import time
 import threading
 import random
 import json
+import re
 
 # Robot name
 NAME = "Buddy"
@@ -88,6 +89,10 @@ Answer length: appropriately detailed
 
 class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     VOICE_ACTIONS = ["bark", "bark harder", "pant",  "howling"]
+    WAKE_SYNONYMS = {
+        "doggie": {"doggie", "doggy", "dog", "dougie", "duggy"},
+        "hey": {"hey", "hi", "hello", "okay", "ok", "yo", "hay"},
+    }
 
     def __init__(self, *args,
             too_close: int = TOO_CLOSE_DISTANCE,
@@ -171,8 +176,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             result = stt_self.listen(stream=False)
             if result is None:
                 return False
-            text = result.lower()
-            hit = any(w in text for w in stt_self.wake_words)
+            self._remember_sound_direction()
+            hit = self._is_wake_phrase(result, stt_self.wake_words)
             print(f"heard: {result}" + ("  [WAKE]" if hit else ""))
             return hit
         self.stt.heard_wake_word = types.MethodType(_heard_wake_word_substring, self.stt)
@@ -713,3 +718,44 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.stop_balance()
         self.action_flow.stop()
         self.dog.close()
+
+    @classmethod
+    def _normalize_phrase(cls, text: str) -> str:
+        text = text.lower().strip()
+        text = re.sub(r"[^a-z0-9\s]+", " ", text)
+        words = []
+        for word in text.split():
+            normalized = word
+            for canonical, aliases in cls.WAKE_SYNONYMS.items():
+                if word in aliases:
+                    normalized = canonical
+                    break
+            words.append(normalized)
+        return " ".join(words)
+
+    @classmethod
+    def _is_wake_phrase(cls, text: str, wake_words: list[str]) -> bool:
+        normalized = cls._normalize_phrase(text)
+        if not normalized:
+            return False
+
+        if any(cls._normalize_phrase(wake_word) in normalized for wake_word in wake_words):
+            return True
+
+        words = normalized.split()
+        joined_pairs = {" ".join(words[index:index + 2]) for index in range(max(0, len(words) - 1))}
+        return any(pair in joined_pairs for pair in {"hey doggie", "doggie", "okay doggie"})
+
+    def _remember_sound_direction(self) -> None:
+        try:
+            if not self.dog.ears.isdetected():
+                return
+            direction = self.dog.ears.read()
+            yaw = self._direction_to_yaw(direction)
+            if yaw is None:
+                return
+            self._sound_yaw = yaw
+            self._last_wake_yaw = yaw
+            self._last_wake_direction_at = time.time()
+        except Exception as e:
+            print(f"wake direction warning: {e}")

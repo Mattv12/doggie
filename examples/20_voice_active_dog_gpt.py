@@ -103,7 +103,7 @@ WAKE_WORD = [
     "hey duggy",
 ]
 # Set wake word answer, set empty to disable
-ANSWER_ON_WAKE = "Ready"
+ANSWER_ON_WAKE = ""
 
 # Welcome message
 WELCOME = "PiDog GPT ready."

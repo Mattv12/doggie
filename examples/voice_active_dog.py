@@ -194,6 +194,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 return False
             self._remember_sound_direction()
             hit = self._is_wake_phrase(result, stt_self.wake_words)
+            if hit:
+                self.memory.note_wake_phrase(result)
             print(f"heard: {result}" + ("  [WAKE]" if hit else ""))
             return hit
         self.stt.heard_wake_word = types.MethodType(_heard_wake_word_substring, self.stt)
@@ -323,6 +325,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.action_flow.set_status(ActionStatus.THINK)
         self._last_user_text = text or ""
         self._last_visual_query = self._is_visual_query(self._last_user_text)
+        self.memory.note_interaction(self._last_user_text)
+        self._extract_owner_cues(self._last_user_text)
 
     def parse_response(self, text):
         result = text.strip().split('ACTIONS: ')
@@ -410,6 +414,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             if now - getattr(self, '_last_touch_event', 0) < self.TOUCH_EVENT_GAP:
                 return False, False, ''
             self._last_touch_event = now
+            self.memory.note_petting()
             if now - getattr(self, '_last_touch_gpt', 0) < self.TOUCH_GPT_COOLDOWN:
                 # quiet acknowledgment, no GPT round
                 if self.any_mode_on():
@@ -790,3 +795,56 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def _is_visual_query(cls, text: str) -> bool:
         normalized = cls._normalize_phrase(text)
         return any(pattern in normalized for pattern in cls.VISUAL_QUERY_PATTERNS)
+
+    def _extract_owner_cues(self, text: str) -> None:
+        normalized = self._normalize_phrase(text)
+        raw = " ".join((text or "").strip().split())
+        if not raw:
+            return
+
+        name_match = re.search(
+            r"\b(?:my name is|i am|i'm|call me)\s+([A-Za-z][A-Za-z\-']{1,30}(?:\s+[A-Za-z][A-Za-z\-']{1,30}){0,2})",
+            raw,
+            re.IGNORECASE,
+        )
+        if name_match:
+            captured_name = name_match.group(1).strip(" .,!?:;")
+            banned = {"here", "ready", "fine", "okay", "ok"}
+            if captured_name.lower() not in banned:
+                if raw.lower().startswith("call me"):
+                    self.memory.remember_nickname(captured_name)
+                else:
+                    self.memory.remember_name(captured_name)
+
+        nickname_match = re.search(
+            r"\b(?:you can call me|my nickname is)\s+([A-Za-z][A-Za-z\-']{1,30}(?:\s+[A-Za-z][A-Za-z\-']{1,30}){0,2})",
+            raw,
+            re.IGNORECASE,
+        )
+        if nickname_match:
+            self.memory.remember_nickname(nickname_match.group(1))
+
+        for pattern, bucket in (
+            (r"\b(?:i like|i love)\s+(.+)", "likes"),
+            (r"\b(?:i don't like|i do not like|i hate)\s+(.+)", "dislikes"),
+            (r"\bmy favorite(?: thing)? is\s+(.+)", "favorite_things"),
+            (r"\bmy favorite\s+(.+?)\s+is\s+(.+)", "favorite_things"),
+            (r"\b(?:i work in|my shop is|my garage is|i keep things in)\s+(.+)", "places"),
+            (r"\b(?:i usually|i always|every morning i|every day i)\s+(.+)", "routines"),
+        ):
+            match = re.search(pattern, raw, re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(match.lastindex or 1)
+            self.memory.remember_preference(bucket, value)
+
+        note_match = re.search(
+            r"\b(?:remember this|remember that|don't forget|do not forget)\s+(.+)",
+            raw,
+            re.IGNORECASE,
+        )
+        if note_match:
+            self.memory.remember_note(note_match.group(1))
+
+        if "remember me" in normalized and "face" not in normalized:
+            self.memory.remember_note("Owner asked Doggie to remember them personally.")

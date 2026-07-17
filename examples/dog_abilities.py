@@ -348,6 +348,7 @@ class AbilitiesMixin:
         if got >= 8:
             if hasattr(self, "memory"):
                 self.memory.note_owner_learned(name=OWNER_NAME, sample_count=got)
+                self.memory.remember_note("Owner face was learned successfully.")
             self.tts.say(f"Got it. I will recognize you now, {OWNER_NAME}.")
         else:
             self.tts.say("I could not see your face well. Try again with more light.")

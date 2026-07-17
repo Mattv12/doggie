@@ -1,0 +1,29 @@
+#!/bin/bash
+# dog-deploy: pull the latest RaceSpace PiDog code and restart the dog.
+# Usage (from anywhere): ssh matt@10.0.0.55 dog-deploy
+set -e
+cd /home/matt/pidog/examples
+
+echo "== pulling =="
+if git remote get-url origin >/dev/null 2>&1; then
+    git pull --ff-only
+else
+    echo "  (no git remote configured yet -- deploying what's on the Pi)"
+fi
+
+echo "== syntax check =="
+for f in 20_voice_active_dog_gpt.py voice_active_dog.py dog_abilities.py; do
+    python3 -c "import ast; ast.parse(open('$f').read())" || {
+        echo "SYNTAX ERROR in $f -- NOT restarting the service"; exit 1; }
+    echo "  $f ok"
+done
+
+echo "== restarting pidog-gpt =="
+sudo systemctl restart pidog-gpt
+sleep 10
+if systemctl is-active --quiet pidog-gpt; then
+    echo "deploy OK: $(git log -1 --oneline)"
+else
+    echo "SERVICE FAILED after deploy -- check: journalctl -u pidog-gpt -n 30"
+    exit 1
+fi

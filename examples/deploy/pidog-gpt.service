@@ -1,0 +1,24 @@
+[Unit]
+Description=PiDog ChatGPT Voice Assistant
+# No network dependency: Vosk STT and Piper TTS are local (cached in /root),
+# and the OpenAI client only needs the network once someone talks to the dog.
+After=sound.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/matt/pidog/examples
+ExecStart=/usr/bin/python3 /home/matt/pidog/examples/20_voice_active_dog_gpt.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LOGNAME=matt
+TimeoutStopSec=15
+Nice=-10
+CPUWeight=800
+IOWeight=800
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+
+[Install]
+WantedBy=multi-user.target

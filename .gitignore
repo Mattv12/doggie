@@ -1,0 +1,70 @@
+.vscode/*
+dev/*
+photo
+test/photo*
+test/scene/*
+backups/*
+**secret*
+# Local secrets
+examples/secret.py
+secret.py
+.env
+*.key
+*.pem
+
+# Python/cache/build junk
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+
+# Local secrets
+examples/secret.py
+secret.py
+.env
+*.key
+*.pem
+
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+build/
+*.egg-info/
+
+# Local backups
+examples_git_backup_*/
+
+# Local secrets
+examples/secret.py
+secret.py
+.env
+*.key
+*.pem
+
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+build/
+*.egg-info/
+
+# Local backups
+examples_git_backup_*/
+
+# Local secrets
+examples/secret.py
+secret.py
+.env
+*.key
+*.pem
+
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+build/
+*.egg-info/
+
+# Local backups
+examples_git_backup_*/

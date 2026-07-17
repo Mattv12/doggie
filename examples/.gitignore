@@ -1,0 +1,16 @@
+# Whitelist: track only RaceSpace PiDog custom files.
+# Everything else (stock SunFounder examples, backups, secrets) stays out.
+*
+!.gitignore
+!README.md
+!20_voice_active_dog_gpt.py
+!voice_active_dog.py
+!dog_abilities.py
+!deploy/
+!deploy/**
+
+# never ever commit these, even if force-added by accident
+secret.py
+*.before_*
+__pycache__/
+img_input.jpeg

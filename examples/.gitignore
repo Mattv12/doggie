@@ -6,6 +6,7 @@
 !20_voice_active_dog_gpt.py
 !voice_active_dog.py
 !dog_abilities.py
+!memory_store.py
 !deploy/
 !deploy/**
 

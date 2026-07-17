@@ -1,0 +1,104 @@
+# Custom Doggie
+
+This repo keeps the stock SunFounder `pidog` package mostly intact and puts our
+custom behavior in `custom_dog/`.
+
+## First Goal
+
+Fast boot:
+
+1. Raspberry Pi OS connects to Wi-Fi.
+2. `doggie-boot.service` starts.
+3. `scripts/doggie_boot.sh` waits briefly for internet.
+4. If online, it pulls the latest `main` from GitHub.
+5. It launches `python3 -m custom_dog.main boot`.
+
+If internet is not ready, the dog still starts local code instead of waiting
+forever.
+
+## Power Strategy
+
+Battery life is handled with simple power profiles in `custom_dog/config.py`.
+This keeps the dog from doing expensive work unless we ask for it.
+
+Current profiles:
+
+- `boot`: low-brightness light feedback, no movement by default
+- `active`: normal action mode for explicit commands
+- `idle`: sit with dim light feedback
+- `sleep`: lie down and turn lights off
+- `low_battery`: lie down and block optional movement
+
+The first HoundMind ideas we are adopting are modular config, opt-in heavy
+features, battery thresholds, quiet/rest modes, and low-cost defaults. We are
+not importing its full runtime yet because that would add a lot of moving parts
+before our boot and battery behavior are proven on this dog.
+
+## Pi Install
+
+Run this on the PiDog:
+
+```bash
+cd /home/matt/pidog
+git pull origin main
+chmod +x scripts/doggie_boot.sh
+sudo cp examples/deploy/doggie-boot.service /etc/systemd/system/doggie-boot.service
+sudo systemctl daemon-reload
+sudo systemctl enable doggie-boot.service
+sudo systemctl start doggie-boot.service
+```
+
+Check it:
+
+```bash
+sudo systemctl status doggie-boot.service
+journalctl -u doggie-boot.service -n 80 --no-pager
+```
+
+## Manual Commands
+
+From `/home/matt/pidog` on the Pi:
+
+```bash
+sudo python3 -m custom_dog.main status
+sudo python3 -m custom_dog.main status --battery
+sudo python3 -m custom_dog.main boot
+sudo python3 -m custom_dog.main boot --profile sleep
+sudo python3 -m custom_dog.main boot --sound
+sudo python3 -m custom_dog.main boot --stand
+sudo python3 -m custom_dog.main idle
+sudo python3 -m custom_dog.main sleep
+sudo python3 -m custom_dog.main profile active
+sudo python3 -m custom_dog.main action sit
+sudo python3 -m custom_dog.main action bark
+sudo python3 -m custom_dog.main action wag-tail
+```
+
+If the battery is low, movement commands are blocked unless you deliberately
+add `--force`:
+
+```bash
+sudo python3 -m custom_dog.main action sit --force
+```
+
+## Tuning Boot
+
+The service accepts these environment variables:
+
+- `DOGGIE_REPO_DIR`: repo path, default `/home/matt/pidog`
+- `DOGGIE_BRANCH`: branch to pull, default `main`
+- `DOGGIE_NETWORK_TIMEOUT`: seconds to wait for internet, default `20`
+- `DOGGIE_PULL_TIMEOUT`: seconds allowed for `git pull`, default `25`
+- `DOGGIE_BOOT_ARGS`: extra args for `custom_dog.main boot`
+
+Example:
+
+```ini
+Environment=DOGGIE_BOOT_ARGS=--sound
+```
+
+For the most battery-efficient boot, use:
+
+```ini
+Environment=DOGGIE_BOOT_ARGS=--profile sleep
+```

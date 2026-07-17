@@ -1,0 +1,28 @@
+[Unit]
+Description=Custom Doggie Fast Boot
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/matt/pidog
+ExecStart=/bin/bash /home/matt/pidog/scripts/doggie_boot.sh
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LOGNAME=matt
+Environment=DOGGIE_REPO_DIR=/home/matt/pidog
+Environment=DOGGIE_BRANCH=main
+Environment=DOGGIE_NETWORK_TIMEOUT=20
+Environment=DOGGIE_PULL_TIMEOUT=25
+TimeoutStartSec=70
+TimeoutStopSec=15
+Nice=-10
+CPUWeight=800
+IOWeight=800
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+
+[Install]
+WantedBy=multi-user.target

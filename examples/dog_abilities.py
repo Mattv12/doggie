@@ -346,6 +346,8 @@ class AbilitiesMixin:
             time.sleep(0.3)
         self._owner_samples = None  # force reload with the new samples
         if got >= 8:
+            if hasattr(self, "memory"):
+                self.memory.note_owner_learned(name=OWNER_NAME, sample_count=got)
             self.tts.say(f"Got it. I will recognize you now, {OWNER_NAME}.")
         else:
             self.tts.say("I could not see your face well. Try again with more light.")
@@ -401,6 +403,8 @@ class AbilitiesMixin:
                     path = os.path.join(GUARD_DIR, f"{ts}.jpg")
                     cv2.imwrite(path, bgr)
                     if owner:
+                        if hasattr(self, "memory"):
+                            self.memory.note_owner_seen(name=OWNER_NAME)
                         print(f"guard: owner recognized, photo {path}")
                         self.action_flow.add_action("wag tail")
                     else:

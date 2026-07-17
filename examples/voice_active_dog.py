@@ -4,6 +4,7 @@ from pidog.pidog import Pidog
 from pidog.dual_touch import TouchStyle
 from pidog.action_flow import ActionFlow, ActionStatus, Posetures
 from dog_abilities import AbilitiesMixin
+from memory_store import DoggieMemory
 
 import time
 import threading
@@ -178,6 +179,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             _va.STT = _orig_STT
             if "cam" in _pre:
                 del self.init_camera
+        self.memory = DoggieMemory()
+        self._last_user_text = ""
+        self._last_visual_query = False
 
         # Wake word fix: the library requires the transcription to EXACTLY
         # equal a wake word, so any background noise or extra words defeats
@@ -317,6 +321,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     def on_heard(self, text):
         self.action_flow.set_status(ActionStatus.THINK)
+        self._last_user_text = text or ""
+        self._last_visual_query = self._is_visual_query(self._last_user_text)
 
     def parse_response(self, text):
         result = text.strip().split('ACTIONS: ')
@@ -337,6 +343,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         else:
             actions = ['stop']
         self.action_flow.add_action(*actions)
+
+        if self._last_visual_query and response_text:
+            self.memory.note_scene(query=self._last_user_text, summary=response_text)
         
         return response_text
 
@@ -721,10 +730,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if not text:
             print("(woke but heard nothing -- back to listening)")
             return ''
+        self._last_user_text = text
+        self._last_visual_query = self._is_visual_query(text)
         # attach a fresh battery reading to every round as sensor context
         volts, pct = self.read_battery()
         if volts is not None:
             text = f"{text}\n<<<Battery: {volts}V, about {pct}%>>>"
+        text = f"{text}\n<<<DoggieMemory\n{self.memory.build_context()}\n>>>"
         return super().think(text, disable_image)
 
     def on_stop(self):

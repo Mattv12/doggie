@@ -113,6 +113,9 @@ class Pidog():
     # Head Yaw, Roll, Pitch
     DEFAULT_HEAD_PINS = [4, 6, 5]
     DEFAULT_TAIL_PIN = [9]
+    GRACEFUL_COLLAPSE_COORDS = [[-12, 72], [-12, 72], [0, 74], [0, 74]]
+    GRACEFUL_COLLAPSE_HEAD = [[0, 0, -8]]
+    GRACEFUL_COLLAPSE_TAIL = [[0]]
 
     HEAD_PITCH_OFFSET = 45
 
@@ -621,6 +624,7 @@ class Pidog():
     def stop_and_lie(self, speed=85):
         try:
             self.body_stop()
+            self._graceful_collapse(speed=max(35, min(speed, 70)))
             self.legs_move(self.actions_dict['lie'][0], speed)
             self.head_move_raw([[0, 0, 0]], speed)
             self.tail_move([[0, 0, 0]], speed)
@@ -628,6 +632,24 @@ class Pidog():
             sleep(0.1)
         except Exception as e:
             error(f'\rstop_and_lie error:{e}')
+
+    def _graceful_collapse(self, speed=55):
+        """Lower into a compact tuck before the final lie action.
+
+        This makes resets look less abrupt by folding the legs inward and
+        bringing the body down before the stock lie-down sequence runs.
+        """
+        try:
+            collapse_angles = [self.legs_angle_calculation(coords) for coords in (
+                self.GRACEFUL_COLLAPSE_COORDS,
+                self.actions_dict['lie'][0][0],
+            )]
+            self.legs_move(collapse_angles, immediately=True, speed=speed)
+            self.head_move(self.GRACEFUL_COLLAPSE_HEAD, immediately=True, speed=speed)
+            self.tail_move(self.GRACEFUL_COLLAPSE_TAIL, immediately=True, speed=speed)
+            self.wait_all_done()
+        except Exception as e:
+            error(f'\rgraceful collapse error:{e}')
 
     def speak(self, name, volume=100):
         """

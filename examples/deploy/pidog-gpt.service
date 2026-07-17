@@ -11,8 +11,11 @@ WorkingDirectory=/home/matt/pidog/examples
 ExecStart=/usr/bin/python3 /home/matt/pidog/examples/20_voice_active_dog_gpt.py
 Restart=always
 RestartSec=5
+EnvironmentFile=/etc/doggie/pidog-gpt.env
 Environment=PYTHONUNBUFFERED=1
 Environment=LOGNAME=matt
+UMask=0077
+NoNewPrivileges=true
 TimeoutStopSec=15
 Nice=-10
 CPUWeight=800

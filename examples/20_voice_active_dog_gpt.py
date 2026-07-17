@@ -1,4 +1,5 @@
 import threading
+import os
 
 # ── TTS engines ──────────────────────────────────────────────────────────
 # Pick one. The VoiceAssistant accepts any TTS instance via the `tts=` parameter.
@@ -22,8 +23,6 @@ _tts_thread = threading.Thread(target=_load_tts, daemon=True)
 _tts_thread.start()
 
 from pidog.llm import OpenAI as LLM
-from secret import OPENAI_API_KEY as API_KEY
-
 from pidog.dual_touch import TouchStyle
 from voice_active_dog import VoiceActiveDog
 
@@ -39,9 +38,19 @@ from voice_active_dog import VoiceActiveDog
 # from pidog.tts import Pico2Wave
 # tts = Pico2Wave()
 
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    raise RuntimeError(
+        f"Missing required environment variable {name}. "
+        "Set it in /etc/doggie/pidog-gpt.env for pidog-gpt.service."
+    )
+
+
 llm = LLM(
-    api_key=API_KEY,
-    model="gpt-4o-mini",
+    api_key=_require_env("OPENAI_API_KEY"),
+    model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
 )
 
 # Robot name

@@ -48,6 +48,18 @@ sudo systemctl enable doggie-boot.service
 sudo systemctl start doggie-boot.service
 ```
 
+For GPT voice mode secrets, use a root-owned environment file instead of
+`secret.py`:
+
+```bash
+sudo install -d -m 700 /etc/doggie
+sudo install -m 600 examples/deploy/pidog-gpt.env.example /etc/doggie/pidog-gpt.env
+sudoedit /etc/doggie/pidog-gpt.env
+sudo cp examples/deploy/pidog-gpt.service /etc/systemd/system/pidog-gpt.service
+sudo systemctl daemon-reload
+sudo systemctl restart pidog-gpt
+```
+
 Check it:
 
 ```bash

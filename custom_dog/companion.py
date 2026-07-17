@@ -7,6 +7,7 @@ responses without depending on the full upstream voice assistant stack.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from .power import BatteryState, apply_profile
@@ -53,7 +54,9 @@ def build_response(text: str, battery: BatteryState) -> ResponsePlan:
     if "battery" in normalized or "charge" in normalized or "power" in normalized:
         return ResponsePlan(speech=_battery_line(battery))
 
-    if normalized in {"hello", "hi", "hey doggie", "hey dog"}:
+    if normalized in {"hello", "hi", "hey doggie", "hey dog", "hello doggie", "hello dog"}:
+        return ResponsePlan(speech="I'm here. Tell me what to do.", actions=["wag-tail"])
+    if normalized.startswith(("hello", "hi", "hey")) and "dog" in normalized:
         return ResponsePlan(speech="I'm here. Tell me what to do.", actions=["wag-tail"])
 
     if "status" in normalized:
@@ -126,6 +129,14 @@ def _battery_line(battery: BatteryState) -> str:
 
 
 def _safe_speak(dog: Any, value: str, *, volume: int) -> None:
+    tts = _get_tts()
+    if tts is not None:
+        try:
+            if hasattr(tts, "say"):
+                tts.say(value)
+                return
+        except Exception as exc:
+            print(f"doggie tts warning: {exc}")
     try:
         dog.speak(value, volume=volume)
     except Exception as exc:
@@ -144,3 +155,13 @@ def _safe_wait(dog: Any) -> None:
         dog.wait_all_done()
     except Exception as exc:
         print(f"doggie wait warning: {exc}")
+
+
+@lru_cache(maxsize=1)
+def _get_tts() -> Any | None:
+    try:
+        from pidog.tts import Espeak
+
+        return Espeak()
+    except Exception:
+        return None

@@ -93,6 +93,18 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "doggie": {"doggie", "doggy", "dog", "dougie", "duggy"},
         "hey": {"hey", "hi", "hello", "okay", "ok", "yo", "hay"},
     }
+    VISUAL_QUERY_PATTERNS = (
+        "what do you see",
+        "what can you see",
+        "what are you seeing",
+        "what do you notice",
+        "what's in front of you",
+        "what is in front of you",
+        "look around",
+        "scan the room",
+        "survey",
+        "describe what you see",
+    )
 
     def __init__(self, *args,
             too_close: int = TOO_CLOSE_DISTANCE,
@@ -289,6 +301,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     def before_think(self, text):
         self.dog.rgb_strip.set_mode('listen', 'yellow', 1)
+        if self._is_visual_query(text):
+            self.start_visual_survey()
 
     def on_start(self):
         self.action_flow.start()
@@ -759,3 +773,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self._last_wake_direction_at = time.time()
         except Exception as e:
             print(f"wake direction warning: {e}")
+
+    @classmethod
+    def _is_visual_query(cls, text: str) -> bool:
+        normalized = cls._normalize_phrase(text)
+        return any(pattern in normalized for pattern in cls.VISUAL_QUERY_PATTERNS)

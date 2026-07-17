@@ -129,6 +129,11 @@ class AbilitiesMixin:
     HEAD_AROUSED_SPEED = 78
     AROUSED_SOUND_COOLDOWN = 0.8  # min s between sound turns while aroused
     AROUSED_SOUND_DEADBAND = 10   # ignore sounds near current aim
+    VISION_SURVEY_RANGE = (-12, 12)
+    VISION_SURVEY_SPEED = 24
+    VISION_SURVEY_STEP_GAP = 1.1
+    VISION_SURVEY_DURATION = 5.0
+    VISION_SURVEY_PITCH = 4
 
     # ---------- sit gaze: see more from the sit position ----------
     # Sitting tips the nose down (SIT head pitch comp is -35), so ambient
@@ -192,12 +197,29 @@ class AbilitiesMixin:
         self._head_yaw = 0
         self._head_last_move = 0.0
         self._head_last_sound_turn = 0.0
+        self._vision_survey_until = 0.0
+        self._vision_survey_index = 0
         t = threading.Thread(name="head_life", target=self._head_life_loop, daemon=True)
         t.start()
         print("head life: idle curiosity + sound tracking")
 
+    def start_visual_survey(self, seconds=None):
+        duration = self.VISION_SURVEY_DURATION if seconds is None else seconds
+        self._vision_survey_until = time.time() + duration
+        self._vision_survey_index = 0
+        self._head_last_move = 0.0
+        try:
+            pitch_comp = self.action_flow.head_pitch_init
+            pitch = min(35, self.VISION_SURVEY_PITCH + self._sit_pitch_bias(time.time()))
+            self.dog.head_move([[0, 0, pitch]], pitch_comp=pitch_comp,
+                               immediately=True, speed=self.VISION_SURVEY_SPEED)
+            self._head_yaw = 0
+        except Exception as e:
+            print(f"visual survey start error: {e}")
+
     def _head_life_loop(self):
         next_gap = random.uniform(*self.HEAD_IDLE_GAP)
+        survey_points = [0, self.VISION_SURVEY_RANGE[0], 0, self.VISION_SURVEY_RANGE[1], 0]
         while True:
             try:
                 time.sleep(0.05)
@@ -214,6 +236,19 @@ class AbilitiesMixin:
                         self.action_flow.thread_action_state != ActionStatus.STANDBY):
                     continue
                 pitch_comp = self.action_flow.head_pitch_init
+                surveying = now < getattr(self, "_vision_survey_until", 0.0)
+
+                if surveying:
+                    if now - self._head_last_move < self.VISION_SURVEY_STEP_GAP:
+                        continue
+                    yaw = survey_points[self._vision_survey_index % len(survey_points)]
+                    self._vision_survey_index += 1
+                    pitch = min(35, self.VISION_SURVEY_PITCH + self._sit_pitch_bias(now))
+                    self.dog.head_move([[yaw, 0, pitch]], pitch_comp=pitch_comp,
+                                       immediately=True, speed=self.VISION_SURVEY_SPEED)
+                    self._head_yaw = yaw
+                    self._head_last_move = now
+                    continue
 
                 # sound reorientation ONLY while aroused (after a wake word):
                 # ambient noise at idle is ignored by design

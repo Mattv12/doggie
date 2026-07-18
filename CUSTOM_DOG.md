@@ -46,6 +46,8 @@ sudo cp examples/deploy/doggie-boot.service /etc/systemd/system/doggie-boot.serv
 sudo systemctl daemon-reload
 sudo systemctl enable doggie-boot.service
 sudo systemctl start doggie-boot.service
+chmod +x scripts/doggie_reboot.sh
+chmod +x scripts/doggie_git_check.sh
 ```
 
 For GPT voice mode secrets, use a root-owned environment file instead of
@@ -65,6 +67,7 @@ Check it:
 ```bash
 sudo systemctl status doggie-boot.service
 journalctl -u doggie-boot.service -n 80 --no-pager
+journalctl -b -u doggie-boot.service --no-pager
 ```
 
 ## Manual Commands
@@ -80,6 +83,7 @@ sudo python3 -m custom_dog.main boot --sound
 sudo python3 -m custom_dog.main boot --stand
 sudo python3 -m custom_dog.main idle
 sudo python3 -m custom_dog.main sleep
+sudo python3 -m custom_dog.main prepare-reboot
 sudo python3 -m custom_dog.main profile active
 sudo python3 -m custom_dog.main action sit
 sudo python3 -m custom_dog.main action bark
@@ -96,6 +100,30 @@ add `--force`:
 sudo python3 -m custom_dog.main action sit --force
 ```
 
+For a remote reboot that asks the dog to sit first, use:
+
+```bash
+sudo /home/matt/pidog/scripts/doggie_reboot.sh
+```
+
+Or from your Windows terminal:
+
+```bash
+ssh matt@raspberrypi "sudo /home/matt/pidog/scripts/doggie_reboot.sh"
+```
+
+For a quick git communication check before remote deploys, use:
+
+```bash
+sudo /home/matt/pidog/scripts/doggie_git_check.sh
+```
+
+Or from your Windows terminal:
+
+```bash
+ssh matt@raspberrypi "sudo /home/matt/pidog/scripts/doggie_git_check.sh"
+```
+
 ## Tuning Boot
 
 The service accepts these environment variables:
@@ -105,6 +133,9 @@ The service accepts these environment variables:
 - `DOGGIE_BRANCH`: branch to pull, default `main`
 - `DOGGIE_NETWORK_TIMEOUT`: seconds to wait for internet, default `20`
 - `DOGGIE_PULL_TIMEOUT`: seconds allowed for `git pull`, default `25`
+- `DOGGIE_START_DELAY`: extra seconds to wait before touching PiDog hardware, default `8`
+- `DOGGIE_BOOT_RETRIES`: how many times to retry `custom_dog.main boot` if startup fails, default `3`
+- `DOGGIE_BOOT_RETRY_DELAY`: seconds to wait between boot retries, default `5`
 - `DOGGIE_BOOT_ARGS`: extra args for `custom_dog.main boot`
 
 Example:
@@ -117,6 +148,25 @@ For the most battery-efficient boot, use:
 
 ```ini
 Environment=DOGGIE_BOOT_ARGS=--profile sleep
+```
+
+If the Pi is reachable but doggie still does not come up after reboot, run:
+
+```bash
+sudo systemctl status doggie-boot.service
+journalctl -b -u doggie-boot.service --no-pager
+systemctl is-enabled doggie-boot.service
+sudo python3 -m custom_dog.main status --battery
+```
+
+If SSH drops with `client_loop: send disconnect: Connection reset`, that usually
+points to a Pi-side power, Wi-Fi, or reboot problem rather than a Python import
+error. Also check:
+
+```bash
+sudo journalctl -b -1 -n 120 --no-pager
+dmesg -T | tail -n 80
+vcgencmd get_throttled
 ```
 
 ## Companion Mode

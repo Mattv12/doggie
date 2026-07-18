@@ -11,6 +11,8 @@ import threading
 import random
 import json
 import re
+import subprocess
+from pathlib import Path
 
 # Robot name
 NAME = "Buddy"
@@ -113,6 +115,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "who am i",
         "do you remember me",
         "what do you remember about me",
+    )
+    GIT_STATUS_PATTERNS = (
+        "git status",
+        "github status",
+        "communicate with git",
+        "talk to git",
+        "reach github",
+        "connected to github",
+        "connected to git",
+        "remote status",
     )
 
     def __init__(self, *args,
@@ -749,6 +761,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._last_user_text = text
         self._last_visual_query = self._is_visual_query(text)
         self._last_identity_query = self._is_identity_query(text)
+        if self._is_git_status_query(text):
+            return self._build_git_status_reply()
         # attach a fresh battery reading to every round as sensor context
         volts, pct = self.read_battery()
         if volts is not None:
@@ -812,6 +826,91 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def _is_identity_query(cls, text: str) -> bool:
         normalized = cls._normalize_phrase(text)
         return any(pattern in normalized for pattern in cls.IDENTITY_QUERY_PATTERNS)
+
+    @classmethod
+    def _is_git_status_query(cls, text: str) -> bool:
+        normalized = cls._normalize_phrase(text)
+        return any(pattern in normalized for pattern in cls.GIT_STATUS_PATTERNS)
+
+    def _build_git_status_reply(self) -> str:
+        status = self._get_git_status()
+        if status["ok"]:
+            parts = ["I'm talking to git just fine."]
+            if status["local_head"]:
+                parts.append(f"My local head is {status['local_head']}.")
+            if status["remote_head"]:
+                parts.append(f"Origin main is {status['remote_head']}.")
+            if status["dirty"]:
+                parts.append("I do have local changes waiting here.")
+            else:
+                parts.append("My worktree is clean.")
+            speech = " ".join(parts)
+        else:
+            speech = status["message"]
+        return f"{speech}\nACTIONS:"
+
+    def _get_git_status(self) -> dict[str, object]:
+        repo_dir = Path(__file__).resolve().parent.parent
+        branch = "main"
+
+        def run_git(*args: str) -> str:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=True,
+            )
+            return result.stdout.strip()
+
+        try:
+            run_git("rev-parse", "--is-inside-work-tree")
+            origin_url = run_git("remote", "get-url", "origin")
+            local_head = run_git("rev-parse", "--short", "HEAD")
+            dirty = bool(run_git("status", "--porcelain"))
+            remote_line = run_git("ls-remote", "origin", branch)
+            remote_head = remote_line.split()[0][:7] if remote_line else ""
+            if not origin_url:
+                return {
+                    "ok": False,
+                    "message": "I found my repo, but origin is not configured.",
+                    "local_head": local_head,
+                    "remote_head": remote_head,
+                    "dirty": dirty,
+                }
+            return {
+                "ok": True,
+                "message": "",
+                "local_head": local_head,
+                "remote_head": remote_head,
+                "dirty": dirty,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "ok": False,
+                "message": "I'm having trouble reaching git right now. The check timed out.",
+                "local_head": "",
+                "remote_head": "",
+                "dirty": False,
+            }
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            if "Could not resolve host" in detail or "could not resolve host" in detail:
+                message = "I can't reach GitHub from here right now."
+            elif "Permission denied" in detail:
+                message = "I can see git, but my GitHub access is being denied."
+            else:
+                message = "My git check failed."
+                if detail:
+                    message = f"{message} {detail.splitlines()[-1]}"
+            return {
+                "ok": False,
+                "message": message,
+                "local_head": "",
+                "remote_head": "",
+                "dirty": False,
+            }
 
     def _filter_actions_for_context(self, actions: list[str]) -> list[str]:
         filtered = list(actions)

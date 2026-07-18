@@ -16,6 +16,9 @@ Environment=DOGGIE_REPO_OWNER=matt
 Environment=DOGGIE_BRANCH=main
 Environment=DOGGIE_NETWORK_TIMEOUT=20
 Environment=DOGGIE_PULL_TIMEOUT=25
+Environment=DOGGIE_START_DELAY=8
+Environment=DOGGIE_BOOT_RETRIES=3
+Environment=DOGGIE_BOOT_RETRY_DELAY=5
 TimeoutStartSec=70
 TimeoutStopSec=15
 Nice=-10

@@ -122,6 +122,19 @@ def sleep_mode(args: argparse.Namespace) -> int:
     return run_profile(args)
 
 
+def prepare_reboot(args: argparse.Namespace) -> int:
+    with dog_session() as dog:
+        battery = get_battery_state(dog)
+        apply_profile(dog, "active", rest=False)
+        dog.do_action("sit", speed=args.speed)
+        dog.wait_all_done()
+        sleep(args.pause)
+
+    voltage = "unknown" if battery.voltage is None else f"{battery.voltage:.2f}v"
+    print(f"reboot prep complete: pose=sit battery={battery.level} voltage={voltage}")
+    return 0
+
+
 def status(args: argparse.Namespace) -> int:
     online = has_internet()
     message = f"internet={'yes' if online else 'no'}"
@@ -220,6 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
     sleep_parser = subparsers.add_parser("sleep", help="lowest-power resting posture")
     sleep_parser.add_argument("--force", action="store_true", help="accepted for command consistency")
     sleep_parser.set_defaults(func=sleep_mode)
+
+    reboot_parser = subparsers.add_parser("prepare-reboot", help="sit before a system reboot")
+    reboot_parser.add_argument("--speed", type=int, default=55)
+    reboot_parser.add_argument("--pause", type=float, default=1.2)
+    reboot_parser.set_defaults(func=prepare_reboot)
 
     status_parser = subparsers.add_parser("status", help="check basic runtime status")
     status_parser.add_argument("--battery", action="store_true", help="also read PiDog battery voltage")

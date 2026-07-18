@@ -129,11 +129,12 @@ class AbilitiesMixin:
     HEAD_AROUSED_SPEED = 78
     AROUSED_SOUND_COOLDOWN = 0.8  # min s between sound turns while aroused
     AROUSED_SOUND_DEADBAND = 10   # ignore sounds near current aim
-    VISION_SURVEY_RANGE = (-12, 12)
-    VISION_SURVEY_SPEED = 24
-    VISION_SURVEY_STEP_GAP = 1.1
-    VISION_SURVEY_DURATION = 5.0
-    VISION_SURVEY_PITCH = 4
+    VISION_SURVEY_RANGE = (-10, 10)
+    VISION_SURVEY_PITCH_RANGE = (2, 9)
+    VISION_SURVEY_SPEED = 12
+    VISION_SURVEY_STEP_GAP = 1.8
+    VISION_SURVEY_DURATION = 7.0
+    VISION_SURVEY_PITCH = 5
 
     # ---------- sit gaze: see more from the sit position ----------
     # Sitting tips the nose down (SIT head pitch comp is -35), so ambient
@@ -211,6 +212,7 @@ class AbilitiesMixin:
         try:
             pitch_comp = self.action_flow.head_pitch_init
             pitch = min(35, self.VISION_SURVEY_PITCH + self._sit_pitch_bias(time.time()))
+            # Ease into the survey from center so visual questions feel calm.
             self.dog.head_move([[0, 0, pitch]], pitch_comp=pitch_comp,
                                immediately=True, speed=self.VISION_SURVEY_SPEED)
             self._head_yaw = 0
@@ -219,7 +221,13 @@ class AbilitiesMixin:
 
     def _head_life_loop(self):
         next_gap = random.uniform(*self.HEAD_IDLE_GAP)
-        survey_points = [0, self.VISION_SURVEY_RANGE[0], 0, self.VISION_SURVEY_RANGE[1], 0]
+        survey_points = [
+            (0, self.VISION_SURVEY_PITCH),
+            (self.VISION_SURVEY_RANGE[0], self.VISION_SURVEY_PITCH_RANGE[1]),
+            (0, self.VISION_SURVEY_PITCH_RANGE[0]),
+            (self.VISION_SURVEY_RANGE[1], self.VISION_SURVEY_PITCH_RANGE[1]),
+            (0, self.VISION_SURVEY_PITCH),
+        ]
         while True:
             try:
                 time.sleep(0.05)
@@ -241,9 +249,9 @@ class AbilitiesMixin:
                 if surveying:
                     if now - self._head_last_move < self.VISION_SURVEY_STEP_GAP:
                         continue
-                    yaw = survey_points[self._vision_survey_index % len(survey_points)]
+                    yaw, base_pitch = survey_points[self._vision_survey_index % len(survey_points)]
                     self._vision_survey_index += 1
-                    pitch = min(35, self.VISION_SURVEY_PITCH + self._sit_pitch_bias(now))
+                    pitch = min(35, base_pitch + self._sit_pitch_bias(now))
                     self.dog.head_move([[yaw, 0, pitch]], pitch_comp=pitch_comp,
                                        immediately=True, speed=self.VISION_SURVEY_SPEED)
                     self._head_yaw = yaw

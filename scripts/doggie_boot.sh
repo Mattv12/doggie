@@ -8,6 +8,9 @@ PYTHON_BIN="${DOGGIE_PYTHON_BIN:-/usr/bin/python3}"
 NETWORK_TIMEOUT="${DOGGIE_NETWORK_TIMEOUT:-20}"
 PULL_TIMEOUT="${DOGGIE_PULL_TIMEOUT:-25}"
 BOOT_ARGS="${DOGGIE_BOOT_ARGS:-}"
+START_DELAY="${DOGGIE_START_DELAY:-8}"
+BOOT_RETRIES="${DOGGIE_BOOT_RETRIES:-3}"
+BOOT_RETRY_DELAY="${DOGGIE_BOOT_RETRY_DELAY:-5}"
 
 cd "$REPO_DIR" || exit 1
 
@@ -40,5 +43,25 @@ else
   echo "Doggie boot: no internet yet, starting local code."
 fi
 
-echo "Doggie boot: launching custom dog."
-exec "$PYTHON_BIN" -m custom_dog.main boot $BOOT_ARGS
+if [ "$START_DELAY" -gt 0 ] 2>/dev/null; then
+  echo "Doggie boot: waiting ${START_DELAY}s for PiDog hardware to settle..."
+  sleep "$START_DELAY"
+fi
+
+attempt=1
+while [ "$attempt" -le "$BOOT_RETRIES" ]; do
+  echo "Doggie boot: launch attempt ${attempt}/${BOOT_RETRIES}."
+  if "$PYTHON_BIN" -m custom_dog.main boot $BOOT_ARGS; then
+    echo "Doggie boot: custom dog launch succeeded."
+    exit 0
+  fi
+
+  if [ "$attempt" -lt "$BOOT_RETRIES" ]; then
+    echo "Doggie boot: launch failed; retrying in ${BOOT_RETRY_DELAY}s."
+    sleep "$BOOT_RETRY_DELAY"
+  fi
+  attempt=$((attempt + 1))
+done
+
+echo "Doggie boot: failed after ${BOOT_RETRIES} attempts."
+exit 1

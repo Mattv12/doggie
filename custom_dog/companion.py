@@ -213,10 +213,8 @@ def _safe_speak(dog: Any, value: str, *, volume: int) -> None:
 def _safe_action(dog: Any, action: str, *, speed: int) -> None:
     try:
         if action == "fart":
-            dog.do_action("sit", speed=max(60, speed))
-            dog.wait_all_done()
             dog.speak("pant", volume=55)
-            dog.do_action("wag_tail", speed=90)
+            dog.do_action("wag_tail", step_count=1, speed=85)
             return
         dog.do_action(action.replace("-", "_"), speed=speed)
     except Exception as exc:

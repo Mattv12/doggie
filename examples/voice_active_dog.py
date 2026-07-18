@@ -93,6 +93,14 @@ Answer length: appropriately detailed
 class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     CAMERA_BRIGHTEN_TARGET = 138
     CAMERA_BRIGHTEN_MAX_GAIN = 6.0
+    DIRECT_ACTION_PATTERNS = {
+        "fart": (
+            "take a poop right here",
+            "take a poop",
+            "poop right here",
+            "fart",
+        ),
+    }
 
     VOICE_ACTIONS = ["bark", "bark harder", "pant",  "howling"]
     WAKE_SYNONYMS = {
@@ -766,6 +774,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             print("(woke but heard nothing -- back to listening)")
             return ''
         self._last_user_text = text
+        direct_action = self._direct_action_for_text(text)
+        if direct_action is not None:
+            return f"\nACTIONS: {direct_action}"
         self._last_visual_query = self._is_visual_query(text)
         self._last_identity_query = self._is_identity_query(text)
         if self._is_git_status_query(text):
@@ -838,6 +849,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def _is_git_status_query(cls, text: str) -> bool:
         normalized = cls._normalize_phrase(text)
         return any(pattern in normalized for pattern in cls.GIT_STATUS_PATTERNS)
+
+    @classmethod
+    def _direct_action_for_text(cls, text: str) -> str | None:
+        normalized = cls._normalize_phrase(text)
+        for action, patterns in cls.DIRECT_ACTION_PATTERNS.items():
+            if any(pattern in normalized for pattern in patterns):
+                return action
+        return None
 
     def _build_git_status_reply(self) -> str:
         status = self._get_git_status()

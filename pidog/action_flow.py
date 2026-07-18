@@ -73,7 +73,6 @@ class ActionFlow():
         },
         "fart": {
             "function": lambda self: self._play_fart(),
-            "poseture": Posetures.SIT,
         },
         "wag tail": {
             "function": lambda self: self.dog_obj.do_action('wag_tail', speed=100),
@@ -178,13 +177,14 @@ class ActionFlow():
                         immediately=True, speed=self.HEAD_SPEED)
 
     def _play_fart(self):
-        self.dog_obj.do_action('sit', speed=70)
-        self.dog_obj.wait_all_done()
         try:
             self.dog_obj.speak('pant', volume=55)
         except Exception as exc:
             print(f'fart sound warning: {exc}')
-        self.dog_obj.do_action('wag_tail', speed=90)
+        try:
+            self.dog_obj.do_action('wag_tail', step_count=1, speed=85)
+        except Exception as exc:
+            print(f'fart tail warning: {exc}')
         self.dog_obj.wait_all_done()
                      
     def change_poseture(self, poseture):

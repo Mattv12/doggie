@@ -24,6 +24,7 @@ ACTION_ALIASES = {
     "lie": ("lie", "lie down", "lay down", "rest", "sleep"),
     "wag-tail": ("wag tail", "wag", "tail"),
     "bark": ("bark", "woof"),
+    "fart": ("fart", "take a poop right here", "poop right here", "take a poop"),
     "forward": ("forward", "go forward", "move forward", "walk forward"),
     "backward": ("backward", "back up", "move backward", "reverse"),
     "turn-left": ("turn left",),
@@ -103,7 +104,7 @@ def build_response(text: str, battery: BatteryState) -> ResponsePlan:
         return ResponsePlan(
             speech=(
                 "Try sit, stand, lie down, wag tail, bark, move forward, move backward, "
-                "turn left, turn right, turn around, stand on two legs, sleep, ask about my battery, or ask me for a joke."
+                "turn left, turn right, turn around, stand on two legs, fart, sleep, ask about my battery, or ask me for a joke."
             )
         )
 
@@ -211,6 +212,12 @@ def _safe_speak(dog: Any, value: str, *, volume: int) -> None:
 
 def _safe_action(dog: Any, action: str, *, speed: int) -> None:
     try:
+        if action == "fart":
+            dog.do_action("sit", speed=max(60, speed))
+            dog.wait_all_done()
+            dog.speak("pant", volume=55)
+            dog.do_action("wag_tail", speed=90)
+            return
         dog.do_action(action.replace("-", "_"), speed=speed)
     except Exception as exc:
         print(f"doggie action warning ({action}): {exc}")

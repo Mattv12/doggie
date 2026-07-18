@@ -71,6 +71,10 @@ class ActionFlow():
         "pant": {
             "function": lambda self: pant(self.dog_obj, self.head_yrp, pitch_comp=self.head_pitch_init),
         },
+        "fart": {
+            "function": lambda self: self._play_fart(),
+            "poseture": Posetures.SIT,
+        },
         "wag tail": {
             "function": lambda self: self.dog_obj.do_action('wag_tail', speed=100),
             "after": "wag tail",
@@ -172,6 +176,16 @@ class ActionFlow():
         self.head_pitch_init = pitch
         self.dog_obj.head_move([self.head_yrp], pitch_comp=pitch,
                         immediately=True, speed=self.HEAD_SPEED)
+
+    def _play_fart(self):
+        self.dog_obj.do_action('sit', speed=70)
+        self.dog_obj.wait_all_done()
+        try:
+            self.dog_obj.speak('pant', volume=55)
+        except Exception as exc:
+            print(f'fart sound warning: {exc}')
+        self.dog_obj.do_action('wag_tail', speed=90)
+        self.dog_obj.wait_all_done()
                      
     def change_poseture(self, poseture):
         if poseture == Posetures.STAND:

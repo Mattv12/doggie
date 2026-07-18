@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+from random import choice
 from typing import Any
 
 from .power import BatteryState, apply_profile
@@ -27,6 +28,25 @@ ACTION_ALIASES = {
 
 MOVEMENT_ACTIONS = {"stand", "sit", "lie", "forward", "backward", "turn-left", "turn-right"}
 SOUND_EFFECTS = {"bark": "single_bark_1"}
+JOKE_PROMPTS = (
+    "tell me a joke",
+    "say a joke",
+    "make me laugh",
+    "do you know a joke",
+    "can you tell me a joke",
+)
+JOKE_RESPONSES = (
+    "Why did the robot dog sit in the shade? Because it did not want to overheat its paws.",
+    "What do you call a dog that writes code? A bark end developer.",
+    "Why was Doggie so calm? Because he had everything under paw control.",
+    "What is a robot dog's favorite music? Anything with a good byte.",
+    "Why did Doggie cross the room? To get to the other woof.",
+    "What do you call a sleepy robot dog? A nap processor.",
+    "Why did Doggie bring a ladder to the server rack? He heard the cloud was up there.",
+    "What is Doggie's favorite snack? Microchips.",
+    "Why was the robot dog such a good listener? He had excellent re-triever protocols.",
+    "What did Doggie say after fixing the bug? That was ruff, but we got it.",
+)
 
 
 @dataclass(frozen=True)
@@ -67,9 +87,12 @@ def build_response(text: str, battery: BatteryState) -> ResponsePlan:
         return ResponsePlan(
             speech=(
                 "Try sit, stand, lie down, wag tail, bark, move forward, move backward, "
-                "turn left, turn right, sleep, or ask about my battery."
+                "turn left, turn right, sleep, ask about my battery, or ask me for a joke."
             )
         )
+
+    if _is_joke_request(normalized):
+        return ResponsePlan(speech=choice(JOKE_RESPONSES), actions=["wag-tail"])
 
     if normalized in {"sleep", "go to sleep", "good night"}:
         return ResponsePlan(speech="Going to sleep.", profile="sleep", rest=True)
@@ -120,6 +143,14 @@ def _detect_actions(normalized: str) -> list[str]:
     if "turn around" in normalized:
         found = ["turn-left", "turn-left"]
     return found[:2]
+
+
+def _is_joke_request(normalized: str) -> bool:
+    if any(prompt in normalized for prompt in JOKE_PROMPTS):
+        return True
+    return "joke" in normalized and any(
+        word in normalized for word in ("tell", "say", "know", "another", "funny", "laugh")
+    )
 
 
 def _battery_line(battery: BatteryState) -> str:

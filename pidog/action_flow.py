@@ -178,7 +178,7 @@ class ActionFlow():
 
     def _play_fart(self):
         try:
-            self.dog_obj.speak('pant', volume=55)
+            self.dog_obj.speak('fart', volume=100)
         except Exception as exc:
             print(f'fart sound warning: {exc}')
         try:

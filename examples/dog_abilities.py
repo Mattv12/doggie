@@ -86,6 +86,8 @@ class AbilitiesMixin:
             bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         else:
             bgr = frame
+        if hasattr(self, "_brighten"):
+            bgr = self._brighten(bgr, cv2)
         return bgr, cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
     def _face_cascade(self, cv2):

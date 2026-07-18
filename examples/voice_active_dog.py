@@ -91,6 +91,9 @@ Answer length: appropriately detailed
 """
 
 class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
+    CAMERA_BRIGHTEN_TARGET = 138
+    CAMERA_BRIGHTEN_MAX_GAIN = 6.0
+
     VOICE_ACTIONS = ["bark", "bark harder", "pant",  "howling"]
     WAKE_SYNONYMS = {
         "doggie": {"doggie", "doggy", "dog", "dougie", "duggy"},
@@ -166,13 +169,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 cam.configure(cam.create_preview_configuration(main={"size": (640, 480)}))
                 cam.start()
                 # garage is dim: default AE tops out at 33ms exposure (30fps
-                # timing) and frames came out ~25/255 mean. Allow up to 66ms
-                # (stream is 15fps anyway) and bias AE brighter; AWB on.
+                # timing) and frames came out very dark. Give AE more room,
+                # bias it brighter, and keep AWB on for face learning.
                 cam.set_controls({
                     "AeEnable": True,
                     "AwbEnable": True,
-                    "ExposureValue": 1.5,
-                    "FrameDurationLimits": (33333, 66666),
+                    "ExposureValue": 2.5,
+                    "FrameDurationLimits": (33333, 100000),
                 })
                 _pre["cam"] = cam
             except Exception as e:
@@ -613,9 +616,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             while self.watch_on:
                 frame = self.picam2.capture_array()
                 if frame.ndim == 3 and frame.shape[2] == 4:
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-                else:
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                frame = self._brighten(frame, cv2)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(50, 50))
                 if len(faces) > 0:
                     x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
@@ -646,7 +649,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     # digital gain (only when dark, capped 4x) recovers visibility for the
     # live stream and GPT vision at the cost of some noise.
     @staticmethod
-    def _brighten(frame, cv2, target=110, max_gain=4.0):
+    def _brighten(frame, cv2, target=None, max_gain=None):
+        if target is None:
+            target = VoiceActiveDog.CAMERA_BRIGHTEN_TARGET
+        if max_gain is None:
+            max_gain = VoiceActiveDog.CAMERA_BRIGHTEN_MAX_GAIN
         mean = float(frame.mean())
         if mean >= target * 0.85:
             return frame

@@ -11,6 +11,10 @@ from functools import lru_cache
 from random import choice
 from typing import Any
 
+from pidog import Pidog
+from pidog.preset_actions import surprise
+from pidog.walk import Walk
+
 from .power import BatteryState, apply_profile
 
 
@@ -25,9 +29,20 @@ ACTION_ALIASES = {
     "turn-left": ("turn left",),
     "turn-right": ("turn right",),
 }
+TRICK_ALIASES = {
+    "turn-around": ("turn around", "spin around", "do a spin", "spin"),
+    "rear-up": (
+        "stand on two legs",
+        "stand on your back legs",
+        "stand on your rear legs",
+        "rear up",
+        "surprise me",
+    ),
+}
 
 MOVEMENT_ACTIONS = {"stand", "sit", "lie", "forward", "backward", "turn-left", "turn-right"}
 SOUND_EFFECTS = {"bark": "single_bark_1"}
+MOVEMENT_TRICKS = {"turn-around", "rear-up"}
 JOKE_PROMPTS = (
     "tell me a joke",
     "say a joke",
@@ -53,6 +68,7 @@ JOKE_RESPONSES = (
 class ResponsePlan:
     speech: str = ""
     actions: list[str] = field(default_factory=list)
+    tricks: list[str] = field(default_factory=list)
     profile: str | None = None
     rest: bool = False
     stop: bool = False
@@ -87,7 +103,7 @@ def build_response(text: str, battery: BatteryState) -> ResponsePlan:
         return ResponsePlan(
             speech=(
                 "Try sit, stand, lie down, wag tail, bark, move forward, move backward, "
-                "turn left, turn right, sleep, ask about my battery, or ask me for a joke."
+                "turn left, turn right, turn around, stand on two legs, sleep, ask about my battery, or ask me for a joke."
             )
         )
 
@@ -99,6 +115,16 @@ def build_response(text: str, battery: BatteryState) -> ResponsePlan:
 
     if normalized in {"idle", "settle down", "stand by", "standby"}:
         return ResponsePlan(speech="Settling in.", profile="idle", rest=True)
+
+    tricks = _detect_tricks(normalized)
+    if tricks:
+        if battery.is_low and any(trick in MOVEMENT_TRICKS for trick in tricks):
+            return ResponsePlan(
+                speech=f"My battery is {battery.level}, so I should skip that trick until I recharge.",
+                profile="low_battery",
+                rest=True,
+            )
+        return ResponsePlan(tricks=tricks, profile="active")
 
     actions = _detect_actions(normalized)
     if actions:
@@ -126,6 +152,9 @@ def execute_plan(dog: Any, plan: ResponsePlan, *, action_speed: int, rest_speed:
     if plan.speech:
         _safe_speak(dog, plan.speech, volume=volume)
 
+    for trick in plan.tricks:
+        _safe_trick(dog, trick, speed=action_speed)
+
     for action in plan.actions:
         if action in SOUND_EFFECTS:
             _safe_speak(dog, SOUND_EFFECTS[action], volume=volume)
@@ -140,9 +169,15 @@ def _detect_actions(normalized: str) -> list[str]:
     for action, aliases in ACTION_ALIASES.items():
         if any(alias in normalized for alias in aliases):
             found.append(action)
-    if "turn around" in normalized:
-        found = ["turn-left", "turn-left"]
     return found[:2]
+
+
+def _detect_tricks(normalized: str) -> list[str]:
+    found: list[str] = []
+    for trick, aliases in TRICK_ALIASES.items():
+        if any(alias in normalized for alias in aliases):
+            found.append(trick)
+    return found[:1]
 
 
 def _is_joke_request(normalized: str) -> bool:
@@ -181,11 +216,41 @@ def _safe_action(dog: Any, action: str, *, speed: int) -> None:
         print(f"doggie action warning ({action}): {exc}")
 
 
+def _safe_trick(dog: Any, trick: str, *, speed: int) -> None:
+    try:
+        if trick == "turn-around":
+            _pivot_turn(dog, cycles=8, speed=max(speed, 90))
+        elif trick == "rear-up":
+            surprise(dog, pitch_comp=0, status="stand")
+    except Exception as exc:
+        print(f"doggie trick warning ({trick}): {exc}")
+
+
 def _safe_wait(dog: Any) -> None:
     try:
         dog.wait_all_done()
     except Exception as exc:
         print(f"doggie wait warning: {exc}")
+
+
+@lru_cache(maxsize=2)
+def _pivot_frames(side: str) -> list[list[float]]:
+    if side == "left":
+        scales = [-0.5, 1, -0.5, 1]
+    else:
+        scales = [1, -0.5, 1, -0.5]
+
+    class _PivotWalk(Walk):
+        LEG_STEP_SCALES = [scales, scales, scales]
+
+    gait = _PivotWalk(Walk.FORWARD, Walk.LEFT)
+    return [Pidog.legs_angle_calculation(coords) for coords in gait.get_coords()]
+
+
+def _pivot_turn(dog: Any, *, cycles: int, speed: int) -> None:
+    frames = _pivot_frames("left")
+    for _ in range(cycles):
+        dog.legs_move(frames, immediately=False, speed=speed)
 
 
 @lru_cache(maxsize=1)

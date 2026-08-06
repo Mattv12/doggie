@@ -362,29 +362,36 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._extract_owner_cues(self._last_user_text)
 
     def parse_response(self, text):
-        result = text.strip().split('ACTIONS: ')
-
-        response_text = result[0].strip()
-        # models sometimes echo the literal RESPONSE_TEXT placeholder from
-        # the format instructions -- drop any such line before speaking
-        junk = '"*\'` '
-        lines = [l for l in response_text.splitlines()
-                 if l.strip(junk).upper() not in ('RESPONSE_TEXT', 'RESPONSE TEXT')]
-        response_text = '\n'.join(lines).strip()
-        if len(result) > 1:
-            actions = result[1].strip()
-            if len(actions) > 0:
-                actions = actions.split(', ')
-            else:
-                actions = ['stop']
+        # `ACTIONS:` is a private control channel for Doggie.  Models do not
+        # always preserve the exact ``ACTIONS: <value>`` spacing, so recognize
+        # the directive case-insensitively and never pass it to TTS.
+        raw = (text or "").strip()
+        match = re.search(r"(?im)^\s*actions?\s*:\s*(.*)$", raw)
+        if match:
+            response_text = raw[:match.start()].strip()
+            action_text = match.group(1).strip()
+            actions = [part.strip() for part in action_text.split(",") if part.strip()]
+            if not actions:
+                actions = ["stop"]
         else:
-            actions = ['stop']
+            response_text = raw
+            actions = ["stop"]
+
+        # Models occasionally echo the response placeholder or an additional
+        # control line.  Neither is meant for the user to hear.
+        junk = '"*\'` '
+        lines = [
+            line for line in response_text.splitlines()
+            if line.strip(junk).upper() not in ("RESPONSE_TEXT", "RESPONSE TEXT")
+            and not re.match(r"^\s*actions?\s*:", line, flags=re.IGNORECASE)
+        ]
+        response_text = "\n".join(lines).strip()
         actions = self._filter_actions_for_context(actions)
         self.action_flow.add_action(*actions)
 
         if self._last_visual_query and response_text:
             self.memory.note_scene(query=self._last_user_text, summary=response_text)
-        
+
         return response_text
 
     def before_say(self, text):

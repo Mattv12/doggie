@@ -137,6 +137,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "connected to git",
         "remote status",
     )
+    STATUS_REPORT_PATTERNS = (
+        "network status",
+        "wifi status",
+        "wi fi status",
+        "internet status",
+        "connection status",
+        "what network",
+        "which network",
+        "battery status",
+        "battery level",
+        "how much battery",
+        "power status",
+        "status report",
+        "doggie status",
+    )
 
     def __init__(self, *args,
             too_close: int = TOO_CLOSE_DISTANCE,
@@ -788,6 +803,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._last_identity_query = self._is_identity_query(text)
         if self._is_git_status_query(text):
             return self._build_git_status_reply()
+        if self._is_status_report_query(text):
+            return self._build_status_report_reply()
         # attach a fresh battery reading to every round as sensor context
         volts, pct = self.read_battery()
         if volts is not None:
@@ -858,6 +875,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return any(pattern in normalized for pattern in cls.GIT_STATUS_PATTERNS)
 
     @classmethod
+    def _is_status_report_query(cls, text: str) -> bool:
+        normalized = cls._normalize_phrase(text)
+        return any(pattern in normalized for pattern in cls.STATUS_REPORT_PATTERNS)
+
+    @classmethod
     def _direct_action_for_text(cls, text: str) -> str | None:
         normalized = cls._normalize_phrase(text)
         for action, patterns in cls.DIRECT_ACTION_PATTERNS.items():
@@ -881,6 +903,89 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         else:
             speech = status["message"]
         return f"{speech}\nACTIONS:"
+
+    @staticmethod
+    def _safe_spoken_value(value: str) -> str:
+        """Keep externally sourced network labels safe and concise for TTS."""
+        cleaned = re.sub(r"[^a-zA-Z0-9 _.-]+", "", value).strip()
+        return cleaned[:48]
+
+    def _get_network_status(self) -> dict[str, str | int | None]:
+        """Read non-secret Wi-Fi status from NetworkManager.
+
+        This deliberately does not read passwords, saved connection secrets,
+        gateway addresses, or scan results from untrusted networks.
+        """
+        try:
+            connection = subprocess.run(
+                ["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", "wlan0"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=True,
+            ).stdout.strip()
+            if not connection or connection == "--":
+                return {"connected": "no", "ssid": None, "signal": None, "ip": None}
+
+            ssid = connection
+            signal = None
+            scan = subprocess.run(
+                ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL", "device", "wifi", "list", "ifname", "wlan0", "--rescan", "no"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            )
+            for line in scan.stdout.splitlines():
+                if not line.startswith("*:"):
+                    continue
+                parts = line.split(":", 2)
+                if len(parts) == 3:
+                    ssid = parts[1] or ssid
+                    try:
+                        signal = int(parts[2])
+                    except ValueError:
+                        signal = None
+                break
+
+            address = subprocess.run(
+                ["nmcli", "-g", "IP4.ADDRESS", "device", "show", "wlan0"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+            ).stdout.strip().splitlines()
+            ip = address[0].split("/", 1)[0] if address else None
+            return {
+                "connected": "yes",
+                "ssid": self._safe_spoken_value(ssid),
+                "signal": signal,
+                "ip": self._safe_spoken_value(ip or ""),
+            }
+        except (OSError, subprocess.SubprocessError):
+            return {"connected": "unknown", "ssid": None, "signal": None, "ip": None}
+
+    def _build_status_report_reply(self) -> str:
+        network = self._get_network_status()
+        parts = []
+        if network["connected"] == "yes":
+            network_name = network["ssid"] or "my saved Wi-Fi network"
+            parts.append(f"I'm connected to {network_name}.")
+            if isinstance(network["signal"], int):
+                parts.append(f"Wi-Fi signal is {network['signal']} percent.")
+            if network["ip"]:
+                parts.append(f"My local IP address is {network['ip']}.")
+        elif network["connected"] == "no":
+            parts.append("I am not connected to Wi-Fi right now.")
+        else:
+            parts.append("I could not read my Wi-Fi status right now.")
+
+        volts, pct = self.read_battery()
+        if volts is not None and pct is not None:
+            parts.append(f"Battery is about {pct} percent at {volts} volts.")
+        else:
+            parts.append("I could not read my battery right now.")
+        return f"{' '.join(parts)}\nACTIONS:"
 
     def _get_git_status(self) -> dict[str, object]:
         repo_dir = Path(__file__).resolve().parent.parent

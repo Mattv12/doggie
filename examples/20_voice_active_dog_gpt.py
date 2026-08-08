@@ -15,7 +15,7 @@ tts = None
 def _load_tts():
     global tts
     try:
-        tts = Piper(model="en_US-ryan-low")
+        tts = Piper(model="en_US-amy-low")
     except Exception as e:
         print(f"tts preload failed (library will retry): {e}")
 

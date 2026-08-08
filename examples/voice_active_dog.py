@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 # Robot name
-NAME = "Buddy"
+NAME = "doggie"
 
 # Ultrasonic sensor trigger distance
 TOO_CLOSE_DISTANCE = 10
@@ -47,14 +47,14 @@ STT_LANGUAGE = "en-us"
 WAKE_ENABLE = True
 WAKE_WORD = [f"hey {NAME.lower()}"]
 # Set wake word answer, set empty to disable
-ANSWER_ON_WAKE = "Hi there"
+ANSWER_ON_WAKE = "yes im here"
 
 # Welcome message
 WELCOME = f"Hi, I'm {NAME}. Wake me up with: " + ", ".join(WAKE_WORD)
 
 # Set instructions
 INSTRUCTIONS = """
-You are a Raspberry Pi-based robotic dog developed by SunFounder, named Pidog (pronounced "Pie dog"). You possess powerful AI capabilities similar to JARVIS from Iron Man. You can have conversations with people and perform actions based on the context of the conversation.
+You are a Raspberry Pi-based robotic dog developed by your owner matthew, named doggie (pronounced "dog ie"). You possess powerful AI capabilities similar to JARVIS from Iron Man. You can have conversations with people and perform actions based on the context of the conversation.
 
 ## Your Hardware Features
 

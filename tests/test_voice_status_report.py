@@ -31,3 +31,17 @@ def test_status_report_contains_network_and_battery():
     assert "10.0.0.55" in report
     assert "67.0 percent" in report
     assert report.endswith("ACTIONS:")
+
+
+def test_offline_reply_is_useful_and_has_no_action_text_for_tts():
+    dog = VoiceActiveDog.__new__(VoiceActiveDog)
+    reply = dog._build_offline_reply("what can you do")
+
+    assert "offline" in reply.lower()
+    assert "sit" in reply.lower()
+    assert reply.endswith("ACTIONS:")
+
+
+def test_direct_actions_match_words_not_substrings():
+    assert VoiceActiveDog._direct_action_for_text("sit down") == "sit"
+    assert VoiceActiveDog._direct_action_for_text("I understand") is None

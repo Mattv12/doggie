@@ -94,6 +94,22 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     CAMERA_BRIGHTEN_TARGET = 138
     CAMERA_BRIGHTEN_MAX_GAIN = 6.0
     DIRECT_ACTION_PATTERNS = {
+        # These are intentionally local, stationary actions.  They remain
+        # available when the cloud model cannot be reached, but walking and
+        # turning always require the online decision path and supervision.
+        "stop": ("stop", "stop it", "be still", "freeze"),
+        "sit": ("sit", "sit down"),
+        "stand": ("stand", "stand up"),
+        "lie": ("lie down", "lay down", "lie"),
+        "bark harder": ("bark harder",),
+        "bark": ("bark",),
+        "pant": ("pant",),
+        "howling": ("howl", "howling"),
+        "wag tail": ("wag tail", "wag your tail"),
+        "shake head": ("shake head", "shake your head"),
+        "stretch": ("stretch",),
+        "nod": ("nod",),
+        "head down": ("head down",),
         "fart": (
             "take a poop right here",
             "take a poop",
@@ -810,7 +826,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if volts is not None:
             text = f"{text}\n<<<Battery: {volts}V, about {pct}%>>>"
         text = f"{text}\n<<<DoggieMemory\n{self.memory.build_context()}\n>>>"
-        return super().think(text, disable_image)
+        try:
+            return super().think(text, disable_image)
+        except Exception as exc:
+            # The bundled OpenAI client raises connection and DNS errors from
+            # inside the streaming loop.  Never let an unavailable network
+            # terminate Doggie's main process and trigger a systemd restart.
+            print(f"cloud reply unavailable; using offline mode: {exc}")
+            return self._build_offline_reply(self._last_user_text)
 
     def on_stop(self):
         self.stop_watch()
@@ -882,10 +905,35 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     @classmethod
     def _direct_action_for_text(cls, text: str) -> str | None:
         normalized = cls._normalize_phrase(text)
+        padded = f" {normalized} "
         for action, patterns in cls.DIRECT_ACTION_PATTERNS.items():
-            if any(pattern in normalized for pattern in patterns):
+            if any(
+                normalized == pattern or f" {pattern} " in padded
+                for pattern in patterns
+            ):
                 return action
         return None
+
+    def _build_offline_reply(self, text: str) -> str:
+        """Provide useful, local-only speech when ChatGPT is unreachable."""
+        normalized = self._normalize_phrase(text)
+        if any(phrase in normalized for phrase in ("what time", "tell me the time", "time is it")):
+            reply = time.strftime("It is %-I:%M %p.")
+        elif any(phrase in normalized for phrase in ("what day", "what date", "todays date", "today s date")):
+            reply = time.strftime("Today is %A, %B %-d.")
+        elif any(phrase in normalized for phrase in ("help", "what can you do", "commands")):
+            reply = (
+                "I am offline, but I can still sit, stand, lie down, bark, "
+                "wag my tail, give a status report, and tell you the time."
+            )
+        elif any(phrase in normalized for phrase in ("hello", "hi doggie", "hey doggie", "how are you")):
+            reply = "I am offline, but I am awake and listening."
+        else:
+            reply = (
+                "I am offline right now. I can still do local commands, "
+                "give a status report, and tell you the time."
+            )
+        return f"{reply}\nACTIONS:"
 
     def _build_git_status_reply(self) -> str:
         status = self._get_git_status()

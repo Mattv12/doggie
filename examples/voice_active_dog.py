@@ -14,6 +14,7 @@ import re
 import subprocess
 import os
 import hmac
+import html
 import secrets
 import queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1151,10 +1152,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     self._send(200, page, "text/html; charset=utf-8")
                     return
                 commands = "".join(
-                    f'<button type="button" onclick="sendCommand({json.dumps(command)})">{command}</button>'
+                    f'<button type="button" data-command="{html.escape(command, quote=True)}">'
+                    f'{html.escape(command)}</button>'
                     for command in sorted(module.WEB_COMMANDS)
                 )
-                page = f'''<!doctype html><title>Doggie Control</title><style>body{{font:16px system-ui;max-width:600px;margin:2rem auto;background:#101827;color:#eef;padding:1rem}}button{{font:inherit;padding:.7rem;margin:.25rem;background:#38bdf8;border:0;border-radius:.4rem}}#result{{min-height:1.4rem}}</style><h1>Doggie Control</h1><p>Commands are queued through Doggie's normal action path. Walking is not available here.</p><div>{commands}</div><p id="result"></p><script>async function sendCommand(command){{const r=await fetch('/api/command',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command}})}});const data=await r.json();document.getElementById('result').textContent=data.status||data.error||'Request failed';}}</script>'''.encode("utf-8")
+                page = f'''<!doctype html><title>Doggie Control</title><style>body{{font:16px system-ui;max-width:600px;margin:2rem auto;background:#101827;color:#eef;padding:1rem}}button{{font:inherit;padding:.7rem;margin:.25rem;background:#38bdf8;border:0;border-radius:.4rem}}#result{{min-height:1.4rem}}</style><h1>Doggie Control</h1><p>Commands are queued through Doggie's normal action path. Walking is not available here.</p><div>{commands}</div><p id="result"></p><script>async function sendCommand(command){{const r=await fetch('/api/command',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command}})}});const data=await r.json();document.getElementById('result').textContent=data.status||data.error||'Request failed';}}for(const button of document.querySelectorAll('[data-command]')){{button.addEventListener('click',()=>sendCommand(button.dataset.command));}}</script>'''.encode("utf-8")
                 self._send(200, page, "text/html; charset=utf-8")
 
             def do_POST(self) -> None:

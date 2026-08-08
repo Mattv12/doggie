@@ -12,7 +12,13 @@ import random
 import json
 import re
 import subprocess
+import os
+import hmac
+import secrets
+import queue
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 # Robot name
 NAME = "Buddy"
@@ -168,6 +174,24 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "status report",
         "doggie status",
     )
+    # The web panel deliberately exposes only stationary, low-risk actions.
+    # Any walking or free-form AI command still has to come through voice.
+    WEB_COMMANDS = {
+        "stop": "stop",
+        "sit": "sit",
+        "stand": "stand",
+        "lie down": "lie down",
+        "bark": "bark",
+        "bark harder": "bark harder",
+        "pant": "pant",
+        "howl": "howl",
+        "wag tail": "wag tail",
+        "shake head": "shake head",
+        "stretch": "stretch",
+        "nod": "nod",
+        "head down": "head down",
+        "status report": "status report",
+    }
 
     def __init__(self, *args,
             too_close: int = TOO_CLOSE_DISTANCE,
@@ -245,6 +269,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._last_user_text = ""
         self._last_visual_query = False
         self._last_identity_query = False
+        self._web_commands = queue.Queue(maxsize=10)
+        self._web_server = None
+        self._web_server_thread = None
+        self._web_sessions = {}
+        self.add_trigger(self.trigger_web_command)
 
         # Wake word fix: the library requires the transcription to EXACTLY
         # equal a wake word, so any background noise or extra words defeats
@@ -378,6 +407,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # Build it from local-only sources so startup is useful offline too.
         self.welcome = self._build_startup_announcement()
         self.action_flow.start()
+        self._start_web_control_server()
         self.dog.rgb_strip.close()
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
 
@@ -839,6 +869,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return self._build_offline_reply(self._last_user_text)
 
     def on_stop(self):
+        if self._web_server is not None:
+            self._web_server.shutdown()
+            self._web_server.server_close()
         self.stop_watch()
         self.stop_balance()
         self.action_flow.stop()
@@ -1052,6 +1085,136 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if volts is not None and pct is not None:
             parts.append(f"Battery is about {pct} percent at {volts} volts.")
         return " ".join(parts)
+
+    def trigger_web_command(self) -> tuple[bool, bool, str]:
+        """Deliver one authenticated web command through the normal action path."""
+        try:
+            command = self._web_commands.get_nowait()
+        except queue.Empty:
+            return False, False, ""
+        return True, True, command
+
+    def _start_web_control_server(self) -> None:
+        """Start the loopback-only command panel when its secret is configured."""
+        token = os.environ.get("DOGGIE_CONTROL_TOKEN", "").strip()
+        if not token:
+            print("web control disabled: DOGGIE_CONTROL_TOKEN is not configured")
+            return
+
+        module = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _session_valid(self) -> bool:
+                cookie = self.headers.get("Cookie", "")
+                session = ""
+                for part in cookie.split(";"):
+                    name, separator, value = part.strip().partition("=")
+                    if separator and name == "doggie_session":
+                        session = value
+                        break
+                expires = module._web_sessions.get(session, 0)
+                return bool(session) and expires > time.time()
+
+            def _send(self, status: int, body: bytes, content_type: str) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _json(self, status: int, payload: dict) -> None:
+                self._send(status, json.dumps(payload).encode("utf-8"), "application/json")
+
+            def _forbidden(self) -> None:
+                self._json(403, {"error": "Sign in required"})
+
+            def do_GET(self) -> None:
+                path = urlparse(self.path).path
+                if path == "/health":
+                    self._json(200, {"status": "ok"})
+                    return
+                if path == "/api/status":
+                    if not self._session_valid():
+                        self._forbidden()
+                        return
+                    self._json(200, {"commands": sorted(module.WEB_COMMANDS)})
+                    return
+                if path != "/":
+                    self._json(404, {"error": "Not found"})
+                    return
+                if not self._session_valid():
+                    page = b'''<!doctype html><title>Doggie Control</title><style>body{font:16px system-ui;max-width:420px;margin:4rem auto;background:#101827;color:#eef;padding:1rem}input,button{font:inherit;padding:.7rem;margin:.4rem 0;width:100%;box-sizing:border-box}button{background:#38bdf8;border:0;border-radius:.4rem}</style><h1>Doggie Control</h1><p>Private control panel. Sign in with the device token.</p><form method="post" action="/login"><input type="password" name="token" autocomplete="off" placeholder="Control token" required><button>Sign in</button></form>'''
+                    self._send(200, page, "text/html; charset=utf-8")
+                    return
+                commands = "".join(
+                    f'<button type="button" onclick="sendCommand({json.dumps(command)})">{command}</button>'
+                    for command in sorted(module.WEB_COMMANDS)
+                )
+                page = f'''<!doctype html><title>Doggie Control</title><style>body{{font:16px system-ui;max-width:600px;margin:2rem auto;background:#101827;color:#eef;padding:1rem}}button{{font:inherit;padding:.7rem;margin:.25rem;background:#38bdf8;border:0;border-radius:.4rem}}#result{{min-height:1.4rem}}</style><h1>Doggie Control</h1><p>Commands are queued through Doggie's normal action path. Walking is not available here.</p><div>{commands}</div><p id="result"></p><script>async function sendCommand(command){{const r=await fetch('/api/command',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command}})}});const data=await r.json();document.getElementById('result').textContent=data.status||data.error||'Request failed';}}</script>'''.encode("utf-8")
+                self._send(200, page, "text/html; charset=utf-8")
+
+            def do_POST(self) -> None:
+                path = urlparse(self.path).path
+                try:
+                    length = min(int(self.headers.get("Content-Length", "0")), 4096)
+                except ValueError:
+                    self._json(400, {"error": "Invalid request"})
+                    return
+                raw = self.rfile.read(length)
+                if path == "/login":
+                    form = parse_qs(raw.decode("utf-8", errors="replace"))
+                    supplied = (form.get("token") or [""])[0]
+                    if not hmac.compare_digest(supplied, token):
+                        self._forbidden()
+                        return
+                    session = secrets.token_urlsafe(32)
+                    module._web_sessions = {session: time.time() + 3600}
+                    self.send_response(303)
+                    self.send_header("Set-Cookie", f"doggie_session={session}; HttpOnly; SameSite=Strict; Path=/")
+                    self.send_header("Location", "/")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
+                if path != "/api/command" or not self._session_valid():
+                    self._forbidden()
+                    return
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._json(400, {"error": "Invalid request"})
+                    return
+                command = str(payload.get("command", "")).strip().lower()
+                command_text = module.WEB_COMMANDS.get(command)
+                if command_text is None:
+                    self._json(400, {"error": "Command is not allowed"})
+                    return
+                try:
+                    module._web_commands.put_nowait(command_text)
+                except queue.Full:
+                    self._json(429, {"error": "Command queue is full"})
+                    return
+                self._json(202, {"status": f"Queued: {command}"})
+
+            def log_message(self, format, *args):
+                return
+
+        try:
+            self._web_server = ThreadingHTTPServer(("127.0.0.1", 8093), Handler)
+        except OSError as exc:
+            print(f"web control disabled: {exc}")
+            return
+        self._web_server.daemon_threads = True
+        self._web_server_thread = threading.Thread(
+            target=self._web_server.serve_forever,
+            name="doggie-web-control",
+            daemon=True,
+        )
+        self._web_server_thread.start()
+        print("web control available at http://127.0.0.1:8093/")
 
     def _get_git_status(self) -> dict[str, object]:
         repo_dir = Path(__file__).resolve().parent.parent

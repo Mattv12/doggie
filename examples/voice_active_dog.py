@@ -374,6 +374,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self.start_visual_survey()
 
     def on_start(self):
+        # VoiceAssistant speaks ``self.welcome`` immediately after this hook.
+        # Build it from local-only sources so startup is useful offline too.
+        self.welcome = self._build_startup_announcement()
         self.action_flow.start()
         self.dog.rgb_strip.close()
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
@@ -1034,6 +1037,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         else:
             parts.append("I could not read my battery right now.")
         return f"{' '.join(parts)}\nACTIONS:"
+
+    def _build_startup_announcement(self) -> str:
+        """Return a brief, local-only startup announcement for TTS."""
+        parts = ["Doggie is ready."]
+        network = self._get_network_status()
+        if network["connected"] == "yes":
+            network_name = network["ssid"] or "my saved Wi-Fi network"
+            parts.append(f"Doggie is online on {network_name}.")
+        else:
+            parts.append("Doggie is offline.")
+
+        volts, pct = self.read_battery()
+        if volts is not None and pct is not None:
+            parts.append(f"Battery is about {pct} percent at {volts} volts.")
+        return " ".join(parts)
 
     def _get_git_status(self) -> dict[str, object]:
         repo_dir = Path(__file__).resolve().parent.parent

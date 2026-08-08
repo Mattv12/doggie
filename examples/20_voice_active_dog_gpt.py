@@ -106,7 +106,7 @@ WAKE_WORD = [
 ANSWER_ON_WAKE = ""
 
 # Welcome message
-WELCOME = "PiDog GPT ready."
+WELCOME = "Doggie is ready."
 
 # Set instructions
 INSTRUCTIONS = """

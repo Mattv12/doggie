@@ -390,6 +390,18 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def init_pidog(self):
         try:
             self.dog = Pidog()
+            if os.environ.get("DOGGIE_HEAD_MOTION_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                # The camera-board power connector currently has insufficient
+                # clearance behind the head. Block every head command at the
+                # PiDog boundary, including animations and preset actions.
+                self.dog.head_stop()
+
+                def block_head_motion(*_args, **_kwargs):
+                    print("head motion blocked: DOGGIE_HEAD_MOTION_ENABLED=0")
+
+                self.dog.head_move = block_head_motion
+                self.dog.head_move_raw = block_head_motion
+                print("head motion lock enabled")
             self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
         except Exception as e:

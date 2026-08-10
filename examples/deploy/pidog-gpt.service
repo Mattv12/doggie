@@ -18,6 +18,9 @@ RestartSec=5
 EnvironmentFile=/etc/doggie/pidog-gpt.env
 Environment=PYTHONUNBUFFERED=1
 Environment=LOGNAME=matt
+# Temporary physical-safety lock: the AI-camera power connector is within the
+# head's rear travel. Set this to 1 only after the connector has clearance.
+Environment=DOGGIE_HEAD_MOTION_ENABLED=0
 UMask=0077
 NoNewPrivileges=true
 TimeoutStopSec=15

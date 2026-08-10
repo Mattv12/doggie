@@ -190,6 +190,18 @@ hotspot (and disables its normal Wi-Fi client). Do not run it on this setup;
 if it was run, restore the normal Wi-Fi configuration before expecting the Pi
 to join a home network.
 
+## Temporary Head Safety Lock
+
+When hardware behind the head needs protection, set this in the
+`pidog-gpt.service` unit and restart the service:
+
+```ini
+Environment=DOGGIE_HEAD_MOTION_ENABLED=0
+```
+
+This blocks all head servo commands, including automatic animations and preset
+actions. Set it back to `1` only after the physical clearance issue is fixed.
+
 ## Companion Mode
 
 `custom_dog.main` now has a lightweight custom companion layer for fast testing.

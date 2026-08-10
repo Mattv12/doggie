@@ -5,6 +5,7 @@ from pidog.dual_touch import TouchStyle
 from pidog.action_flow import ActionFlow, ActionStatus, Posetures
 from dog_abilities import AbilitiesMixin
 from memory_store import DoggieMemory
+from owner_voice import OwnerVoice
 
 import time
 import threading
@@ -109,6 +110,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "sit": ("sit", "sit down", "sit up"),
         "stand": ("stand", "stand up"),
         "lie": ("lie down", "lay down", "lie"),
+        "learn my face": ("learn my face",),
+        "learn my voice": ("learn my voice", "learn my voice print"),
         "bark harder": ("bark harder",),
         "bark": ("bark",),
         "pant": ("pant",),
@@ -276,6 +279,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._last_user_text = ""
         self._last_visual_query = False
         self._last_identity_query = False
+        self._last_stt_audio = b""
+        self._last_stt_sample_rate = 16000
+        self.voice_identity = OwnerVoice()
         self._web_commands = queue.Queue(maxsize=10)
         self._web_server = None
         self._web_server_thread = None
@@ -308,10 +314,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         import time as _time
         import sounddevice as _sd
 
+        def _remember_audio(chunks, sample_rate):
+            self._last_stt_audio = b"".join(chunks)
+            self._last_stt_sample_rate = int(sample_rate or self.stt._samplerate)
+
         def _snappy_listen_streaming(stt_self, q, device=None, samplerate=None, callback=None,
                                      stable_silence=0.7, max_utterance=6.0):
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
                                     dtype="int16", channels=1, callback=callback):
+                audio_chunks = []
                 last_partial = ""
                 last_change = None
                 start = _time.time()
@@ -322,16 +333,19 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if ((last_change is not None and now - last_change > stable_silence)
                             or (now - start > max_utterance)):
                         text = _json.loads(stt_self.recognizer.FinalResult()).get("text", "").strip()
+                        _remember_audio(audio_chunks, samplerate)
                         yield {"done": True, "partial": "", "final": text}
                         return
                     try:
                         data = q.get(timeout=0.2)
                     except _queue.Empty:
                         continue
+                    audio_chunks.append(data)
                     if stt_self.recognizer.AcceptWaveform(data):
                         text = _json.loads(stt_self.recognizer.Result()).get("text", "")
                         if text == "":
                             continue
+                        _remember_audio(audio_chunks, samplerate)
                         yield {"done": True, "partial": "", "final": text.strip()}
                         return
                     partial = _json.loads(stt_self.recognizer.PartialResult()).get("partial", "")
@@ -345,6 +359,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                          stable_silence=0.6, max_listen=4.0):
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
                                     dtype="int16", channels=1, callback=callback):
+                audio_chunks = []
                 last_partial = ""
                 last_change = None
                 start = _time.time()
@@ -355,15 +370,18 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if ((last_change is not None and now - last_change > stable_silence)
                             or (now - start > max_listen)):
                         text = _json.loads(stt_self.recognizer.FinalResult()).get("text", "").strip()
+                        _remember_audio(audio_chunks, samplerate)
                         return text if text else None
                     try:
                         data = q.get(timeout=0.2)
                     except _queue.Empty:
                         continue
+                    audio_chunks.append(data)
                     if stt_self.recognizer.AcceptWaveform(data):
                         text = _json.loads(stt_self.recognizer.Result()).get("text", "")
                         if text == "":
                             continue
+                        _remember_audio(audio_chunks, samplerate)
                         return text.strip()
                     partial = _json.loads(stt_self.recognizer.PartialResult()).get("partial", "")
                     if partial and not partial.isspace() and partial != last_partial:
@@ -398,7 +416,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # the rear/up motion that can strike the connector.
                 original_head_move = self.dog.head_move
                 original_head_move_raw = self.dog.head_move_raw
-                safe_forward_pitch = -5
+                # Standard PiDog sit uses -35 degrees to tip its nose down.
+                # This robot's -5 calibration was still visibly nose-up, so
+                # -20 is the conservative physical forward/level correction.
+                safe_forward_pitch = -20
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
@@ -418,7 +439,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                            pitch_comp=0, immediately=True,
                                            speed=50):
                     # Preserve left/right tracking only.  Zeroing roll and
-                    # target pitch keeps the physical pitch at -5 degrees.
+                    # target pitch keeps the physical pitch at -20 degrees.
                     safe_targets = [[target[0], 0, 0] for target in target_yrps]
                     original_head_move(safe_targets,
                                        pitch_comp=safe_forward_pitch,
@@ -445,7 +466,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: yaw only, pitch fixed at -5 degrees")
+                print("head safety limiter enabled: yaw only, pitch fixed at -20 degrees")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
@@ -908,6 +929,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if not text:
             print("(woke but heard nothing -- back to listening)")
             return ''
+        if not self._voice_and_face_authorized(text):
+            return "I heard you, but I need my owner's voice before I can follow commands."
         self._last_user_text = text
         direct_action = self._direct_action_for_text(text)
         if direct_action is not None:
@@ -933,6 +956,25 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             # terminate Doggie's main process and trigger a systemd restart.
             print(f"cloud reply unavailable; using offline mode: {exc}")
             return self._build_offline_reply(self._last_user_text)
+
+    def _voice_and_face_authorized(self, text):
+        """Gate microphone commands after the owner has enrolled a voice.
+
+        A clear non-owner face is a second required factor. When the camera
+        cannot see a usable face, the verified local voice is enough.
+        """
+        if not self.voice_identity.enrolled():
+            return True  # initial enrollment must remain possible
+        matched, score, detail = self.voice_identity.verify_pcm(
+            self._last_stt_audio, self._last_stt_sample_rate)
+        print(f"owner voice check: {detail} ({score:.2f})")
+        if not matched:
+            return False
+        face_status = self.owner_face_status()
+        if face_status is False:
+            print("owner face check: visible face did not match")
+            return False
+        return True
 
     def on_stop(self):
         if self._web_server is not None:

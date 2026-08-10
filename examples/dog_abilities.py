@@ -42,6 +42,7 @@ class AbilitiesMixin:
         ops["fetch"] = {"function": lambda flow: self.start_fetch()}
         ops["stop fetch"] = {"function": lambda flow: self.stop_fetch()}
         ops["learn my face"] = {"function": lambda flow: self.learn_face()}
+        ops["learn my voice"] = {"function": lambda flow: self.learn_voice()}
         # sit-only upward gaze (no "poseture" key: must not force a stand)
         ops["look up"] = {"function": lambda flow: self.look_up()}
         # smoother turns: stock 'turn left/right' walks a wide forward arc,
@@ -337,6 +338,24 @@ class AbilitiesMixin:
             best = max(best, score)
         return best > 0.55
 
+    def owner_face_status(self):
+        """Return owner/non-owner when a clear face is visible, else None."""
+        if getattr(self, "picam2", None) is None:
+            return None
+        try:
+            import cv2
+            if not self._load_owner(cv2):
+                return None  # face enrollment has not happened yet
+            _, gray = self._grab_gray(cv2)
+            faces = self._face_cascade(cv2).detectMultiScale(
+                gray, 1.2, 4, minSize=(80, 80))
+            if len(faces) == 0:
+                return None  # camera cannot help; fall back to voice
+            return any(self._is_owner(cv2, gray, face) for face in faces)
+        except Exception as exc:
+            print(f"owner face check unavailable: {exc}")
+            return None
+
     def _purge_expired_visitor_data(self):
         """Keep surveillance evidence local and remove it after 60 days.
 
@@ -388,6 +407,11 @@ class AbilitiesMixin:
         else:
             self.tts.say("I could not see your face well. Try again with more light.")
         print(f"learn face: saved {got} samples to {FACES_DIR}")
+
+    def learn_voice(self):
+        ok, message = self.voice_identity.enroll(self.tts.say)
+        print(f"learn voice: {message}")
+        self.tts.say(message)
 
     # ---------- guard mode ----------
     def start_guard(self):

@@ -857,6 +857,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return f"\nACTIONS: {direct_action}"
         self._last_visual_query = self._is_visual_query(text)
         self._last_identity_query = self._is_identity_query(text)
+        if self._last_visual_query and not self._camera_available():
+            return self._build_camera_unavailable_reply()
         if self._is_git_status_query(text):
             return self._build_git_status_reply()
         if self._is_status_report_query(text):
@@ -929,6 +931,17 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def _is_visual_query(cls, text: str) -> bool:
         normalized = cls._normalize_phrase(text)
         return any(pattern in normalized for pattern in cls.VISUAL_QUERY_PATTERNS)
+
+    def _camera_available(self) -> bool:
+        """Return whether this response can be based on a live camera frame."""
+        return bool(getattr(self, "with_image", False) and getattr(self, "picam2", None))
+
+    @staticmethod
+    def _build_camera_unavailable_reply() -> str:
+        return (
+            "I can't see right now because my camera is unavailable. "
+            "I can still hear you and respond to voice commands.\nACTIONS:"
+        )
 
     @classmethod
     def _is_identity_query(cls, text: str) -> bool:

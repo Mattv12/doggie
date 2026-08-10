@@ -82,3 +82,15 @@ def test_startup_announcement_distinguishes_wifi_from_internet():
     assert "connected to mattsinternet" in announcement
     assert "no internet access" in announcement
     assert "online" not in announcement
+
+
+def test_visual_question_is_honest_when_camera_is_unavailable():
+    dog = VoiceActiveDog.__new__(VoiceActiveDog)
+    dog.with_image = False
+    dog.picam2 = None
+
+    reply = dog.think("What can you see?")
+
+    assert "can't see" in reply
+    assert "camera is unavailable" in reply
+    assert reply.endswith("ACTIONS:")

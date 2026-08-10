@@ -131,7 +131,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     VOICE_ACTIONS = ["bark", "bark harder", "pant",  "howling"]
     WAKE_SYNONYMS = {
-        "doggie": {"doggie", "doggy", "dog", "dougie", "duggy"},
+        # Vosk's small local model has repeatedly heard Doggie as these
+        # near-sounding words in the garage.  They are accepted only as part
+        # of the wake phrase (or as the one-word name fallback below).
+        "doggie": {"doggie", "doggy", "dog", "dougie", "duggy",
+                   "dodgy", "dummy", "derby"},
         "hey": {"hey", "hi", "hello", "okay", "ok", "yo", "hay"},
     }
     VISUAL_QUERY_PATTERNS = (
@@ -387,6 +391,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if partial and not partial.isspace() and partial != last_partial:
                         last_partial = partial
                         last_change = _time.time()
+                        # The wake listener used to wait for Vosk's endpoint
+                        # even after it had already recognized "hey doggie".
+                        # Return the partial immediately, then reset so the
+                        # following command starts with a clean recognizer.
+                        if self._is_wake_phrase(partial, stt_self.wake_words):
+                            _remember_audio(audio_chunks, samplerate)
+                            stt_self.recognizer.Reset()
+                            return partial
 
         self.stt._listen_streaming = types.MethodType(_snappy_listen_streaming, self.stt)
         self.stt._listen_non_streaming = types.MethodType(_snappy_listen_non_streaming, self.stt)
@@ -1020,8 +1032,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return True
 
         words = normalized.split()
-        joined_pairs = {" ".join(words[index:index + 2]) for index in range(max(0, len(words) - 1))}
-        return any(pair in joined_pairs for pair in {"hey doggie", "doggie", "okay doggie"})
+        joined_pairs = {" ".join(words[index:index + 2])
+                        for index in range(max(0, len(words) - 1))}
+        return ("doggie" in words
+                or any(pair in joined_pairs for pair in {"hey doggie", "okay doggie"}))
 
     def _remember_sound_direction(self) -> None:
         try:

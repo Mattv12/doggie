@@ -861,8 +861,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     def _watch_loop(self):
         import cv2
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         yaw = 0.0
         pitch = 0.0
         try:
@@ -872,10 +870,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                 frame = self._brighten(frame, cv2)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(50, 50))
+                faces = self.detect_faces(cv2, frame, gray)
                 if len(faces) > 0:
                     visible_face = max(faces, key=lambda f: f[2] * f[3])
-                    self.remember_visible_face(cv2, gray, visible_face)
+                    self.remember_visible_face(cv2, frame, gray, visible_face)
                 detections = self._get_ai_detections()
                 wanted = (detections if self.ai_track_target == "object"
                           else [item for item in detections

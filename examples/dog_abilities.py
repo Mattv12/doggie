@@ -23,9 +23,12 @@ from pidog.pidog import Pidog
 from pidog.walk import Walk
 
 FACES_DIR = "/home/matt/.pidog_faces/owner"
+OWNER_EMBEDDINGS = "/home/matt/.pidog_faces/owner_embeddings.npy"
 GUARD_DIR = "/home/matt/pidog/guard_photos"
 VISITOR_FACES_DIR = "/home/matt/.pidog_faces/visitors"
 OWNER_NAME = "Matt"
+YUNET_MODEL = "/home/matt/.local/share/doggie/models/face_detection_yunet.onnx"
+SFACE_MODEL = "/home/matt/.local/share/doggie/models/face_recognition_sface.onnx"
 
 
 class AbilitiesMixin:
@@ -68,6 +71,8 @@ class AbilitiesMixin:
         self.fetch_on = False
         self.fetch_thread = None
         self._owner_samples = None
+        self._owner_embeddings = None
+        self._face_models_cache = None
         self._last_visitor_face_at = 0.0
         self._last_owner_face_at = 0.0
         self._start_head_life()
@@ -102,6 +107,33 @@ class AbilitiesMixin:
             self._cascade = cv2.CascadeClassifier(
                 cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         return self._cascade
+
+    def _face_models(self, cv2):
+        if self._face_models_cache is not None:
+            return self._face_models_cache
+        if not (os.path.exists(YUNET_MODEL) and os.path.exists(SFACE_MODEL)):
+            self._face_models_cache = False
+            return False
+        try:
+            self._face_models_cache = (
+                cv2.FaceDetectorYN.create(YUNET_MODEL, "", (320, 320), 0.78, 0.3, 100),
+                cv2.FaceRecognizerSF.create(SFACE_MODEL, ""),
+            )
+        except Exception as exc:
+            print(f"modern face models unavailable: {exc}")
+            self._face_models_cache = False
+        return self._face_models_cache
+
+    def detect_faces(self, cv2, bgr, gray=None):
+        models = self._face_models(cv2)
+        if models:
+            detector, _ = models
+            detector.setInputSize((bgr.shape[1], bgr.shape[0]))
+            _, faces = detector.detect(bgr)
+            return [] if faces is None else list(faces)
+        if gray is None:
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        return list(self._face_cascade(cv2).detectMultiScale(gray, 1.2, 4, minSize=(60, 60)))
 
     # ---------- pivot turns ----------
     @staticmethod
@@ -325,12 +357,39 @@ class AbilitiesMixin:
         return samples
 
     def _crop_face(self, cv2, gray, face):
-        x, y, w, h = face
+        x, y, w, h = (int(v) for v in face[:4])
         crop = gray[y:y + h, x:x + w]
         crop = cv2.resize(crop, (100, 100))
         return cv2.equalizeHist(crop)
 
-    def _is_owner(self, cv2, gray, face):
+    def _load_owner_embeddings(self):
+        if self._owner_embeddings is None:
+            try:
+                import numpy as np
+                self._owner_embeddings = np.load(OWNER_EMBEDDINGS)
+            except (OSError, ValueError):
+                self._owner_embeddings = []
+        return self._owner_embeddings
+
+    def _face_embedding(self, cv2, bgr, face):
+        models = self._face_models(cv2)
+        if not models:
+            return None
+        _, recognizer = models
+        aligned = recognizer.alignCrop(bgr, face)
+        return recognizer.feature(aligned)
+
+    def _is_owner(self, cv2, gray, face, bgr=None):
+        if bgr is not None:
+            embedding = self._face_embedding(cv2, bgr, face)
+            samples = self._load_owner_embeddings()
+            if embedding is not None and len(samples):
+                # SFace cosine matching is robust to pose/lighting unlike the
+                # old equalized-pixel template comparison.
+                scores = [float(cv2.FaceRecognizerSF.match(
+                    embedding, sample, cv2.FaceRecognizerSF_FR_COSINE))
+                          for sample in samples]
+                return max(scores, default=0.0) >= 0.45
         samples = self._load_owner(cv2)
         if not samples:
             return False
@@ -349,19 +408,18 @@ class AbilitiesMixin:
             import cv2
             if not self._load_owner(cv2):
                 return None  # face enrollment has not happened yet
-            _, gray = self._grab_gray(cv2)
-            faces = self._face_cascade(cv2).detectMultiScale(
-                gray, 1.2, 4, minSize=(80, 80))
+            bgr, gray = self._grab_gray(cv2)
+            faces = self.detect_faces(cv2, bgr, gray)
             if len(faces) == 0:
                 return None  # camera cannot help; fall back to voice
-            return any(self._is_owner(cv2, gray, face) for face in faces)
+            return any(self._is_owner(cv2, gray, face, bgr) for face in faces)
         except Exception as exc:
             print(f"owner face check unavailable: {exc}")
             return None
 
-    def remember_visible_face(self, cv2, gray, face):
+    def remember_visible_face(self, cv2, bgr, gray, face):
         """Persist a visitor crop locally, or refresh the owner's memory."""
-        if self._is_owner(cv2, gray, face):
+        if self._is_owner(cv2, gray, face, bgr):
             now = time.time()
             if (hasattr(self, "memory")
                     and now - getattr(self, "_last_owner_face_at", 0.0)
@@ -411,20 +469,27 @@ class AbilitiesMixin:
             return
         os.makedirs(FACES_DIR, exist_ok=True)
         self.tts.say(f"Okay {OWNER_NAME}, look at my nose for ten seconds.")
-        cascade = self._face_cascade(cv2)
         got = 0
+        embeddings = []
         t0 = time.time()
         while time.time() - t0 < 12 and got < 20:
             bgr, gray = self._grab_gray(cv2)
-            faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(80, 80))
+            faces = self.detect_faces(cv2, bgr, gray)
             if len(faces) > 0:
                 face = max(faces, key=lambda f: f[2] * f[3])
                 crop = self._crop_face(cv2, gray, face)
                 cv2.imwrite(os.path.join(
                     FACES_DIR, f"owner_{int(time.time() * 1000)}.png"), crop)
+                embedding = self._face_embedding(cv2, bgr, face)
+                if embedding is not None:
+                    embeddings.append(embedding)
                 got += 1
             time.sleep(0.3)
         self._owner_samples = None  # force reload with the new samples
+        if embeddings:
+            import numpy as np
+            np.save(OWNER_EMBEDDINGS, np.asarray(embeddings))
+            self._owner_embeddings = None
         if got >= 8:
             if hasattr(self, "memory"):
                 self.memory.note_owner_learned(name=OWNER_NAME, sample_count=got)
@@ -466,7 +531,6 @@ class AbilitiesMixin:
         os.makedirs(GUARD_DIR, exist_ok=True)
         os.makedirs(VISITOR_FACES_DIR, exist_ok=True)
         self._purge_expired_visitor_data()
-        cascade = self._face_cascade(cv2)
         # face forward and hold still so frame-difference means real motion
         self.dog.head_move([[0, 0, 0]], pitch_comp=self.action_flow.head_pitch_init,
                            immediately=True, speed=80)
@@ -486,11 +550,11 @@ class AbilitiesMixin:
                     diff = cv2.absdiff(small, prev)
                     motion = int((diff > 28).sum()) > 350  # ~2% of pixels changed
                 prev = small
-                faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(60, 60))
+                faces = self.detect_faces(cv2, bgr, gray)
                 now = time.time()
                 if (motion or len(faces) > 0) and now - last_alert > self.GUARD_ALERT_COOLDOWN:
                     last_alert = now
-                    owner = any(self._is_owner(cv2, gray, f) for f in faces)
+                    owner = any(self._is_owner(cv2, gray, f, bgr) for f in faces)
                     ts = time.strftime("%Y-%m-%d_%H%M%S")
                     path = os.path.join(GUARD_DIR, f"{ts}.jpg")
                     cv2.imwrite(path, bgr)

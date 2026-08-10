@@ -12,6 +12,7 @@ import random
 import json
 import re
 import subprocess
+import socket
 import os
 import hmac
 import html
@@ -243,7 +244,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 })
                 _pre["cam"] = cam
             except Exception as e:
-                _errs.append(e)
+                # Vision is optional. A missing camera must not prevent the
+                # speech-and-motion assistant from starting.
+                print(f"camera unavailable; starting without vision: {e}")
 
         _t0 = time.time()
         _threads = [threading.Thread(target=f, daemon=True)
@@ -260,6 +263,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         _va.STT = lambda language=None, **kw: _pre["stt"]
         if "cam" in _pre:
             self.init_camera = lambda: setattr(self, "picam2", _pre["cam"])
+        else:
+            # Do not let the base class retry an unavailable camera.
+            kwargs["with_image"] = False
         try:
             super().__init__(*args, **kwargs)
         finally:
@@ -995,7 +1001,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         cleaned = re.sub(r"[^a-zA-Z0-9 _.-]+", "", value).strip()
         return cleaned[:48]
 
-    def _get_network_status(self) -> dict[str, str | int | None]:
+    @staticmethod
+    def _has_internet_access() -> bool:
+        """Check routed internet access without relying on ICMP/ping."""
+        try:
+            with socket.create_connection(("1.1.1.1", 443), timeout=2):
+                return True
+        except OSError:
+            return False
+
+    def _get_network_status(self) -> dict[str, str | int | bool | None]:
         """Read non-secret Wi-Fi status from NetworkManager.
 
         This deliberately does not read passwords, saved connection secrets,
@@ -1010,7 +1025,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 check=True,
             ).stdout.strip()
             if not connection or connection == "--":
-                return {"connected": "no", "ssid": None, "signal": None, "ip": None}
+                return {"connected": "no", "internet": False, "ssid": None, "signal": None, "ip": None}
 
             ssid = connection
             signal = None
@@ -1043,12 +1058,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             ip = address[0].split("/", 1)[0] if address else None
             return {
                 "connected": "yes",
+                "internet": self._has_internet_access(),
                 "ssid": self._safe_spoken_value(ssid),
                 "signal": signal,
                 "ip": self._safe_spoken_value(ip or ""),
             }
         except (OSError, subprocess.SubprocessError):
-            return {"connected": "unknown", "ssid": None, "signal": None, "ip": None}
+            return {"connected": "unknown", "internet": None, "ssid": None, "signal": None, "ip": None}
 
     def _build_status_report_reply(self) -> str:
         network = self._get_network_status()
@@ -1056,6 +1072,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if network["connected"] == "yes":
             network_name = network["ssid"] or "my saved Wi-Fi network"
             parts.append(f"I'm connected to {network_name}.")
+            if network.get("internet") is False:
+                parts.append("I do not have internet access.")
             if isinstance(network["signal"], int):
                 parts.append(f"Wi-Fi signal is {network['signal']} percent.")
             if network["ip"]:
@@ -1076,9 +1094,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         """Return a brief, local-only startup announcement for TTS."""
         parts = ["Doggie is ready."]
         network = self._get_network_status()
-        if network["connected"] == "yes":
+        if network["connected"] == "yes" and network.get("internet") is True:
             network_name = network["ssid"] or "my saved Wi-Fi network"
             parts.append(f"Doggie is online on {network_name}.")
+        elif network["connected"] == "yes":
+            network_name = network["ssid"] or "my saved Wi-Fi network"
+            parts.append(f"Doggie is connected to {network_name}, but has no internet access.")
         else:
             parts.append("Doggie is offline.")
 

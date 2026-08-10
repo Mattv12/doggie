@@ -24,7 +24,7 @@ class ActionDict(dict):
         if offset in range(-60, 60):
             self.barycenter = offset
 
-    # 站 stand
+    # stand
     @property
     def stand(self):
         x = self.barycenter
@@ -34,21 +34,21 @@ class ActionDict(dict):
                 [[x, y], [x, y], [x+20, y-5], [x+20, y-5]]),
         ], 'legs'
 
-    # 坐 sit
+    # sit
     @property
     def sit(self):
         return [
             [30, 60, -30, -60, 80, -45, -80, 45],
         ], 'legs'
 
-    # 趴 lie
+    # lie
     @property
     def lie(self):
         return [
             [45, -45, -45, 45, 45, -45, -45, 45]
         ], 'legs'
 
-    # 伸腿趴 lie_with_hands_out
+    # lie_with_hands_out
     @property
     def lie_with_hands_out(self):
         return [
@@ -95,7 +95,7 @@ class ActionDict(dict):
             data.append(Pidog.legs_angle_calculation(coord))
         return data, 'legs'
 
-    # 小跑 trot
+    # trot
     @property
     def trot(self):
         data = []
@@ -105,14 +105,14 @@ class ActionDict(dict):
             data.append(Pidog.legs_angle_calculation(coord))
         return data, 'legs'
 
-    # 伸懒腰 stretch
+    # stretch
     @property
     def stretch(self):
         return [
             [-80, 70, 80, -70, -20, 64, 20, -64],
         ], 'legs'
 
-    # 俯卧撑 push_up
+    # push_up
     @property
     def push_up(self):
         return [
@@ -120,7 +120,7 @@ class ActionDict(dict):
             [45, 35, -45, -35, 80, 70, -80, -70]
         ], 'legs'
 
-    # 打瞌睡 doze_off
+    # doze_off
     @property
     def doze_off(self):
         start = -30
@@ -152,7 +152,7 @@ class ActionDict(dict):
 
         return angs, 'legs'
 
-    # 点头昏睡 nod_lethargy
+    # nod_lethargy
     @property
     def nod_lethargy(self):
         y = 0
@@ -169,7 +169,7 @@ class ActionDict(dict):
 
         return angs, 'head'
 
-    # 摇头 shake_head
+    # shake_head
     @property
     def shake_head(self):
         amplitude = 60
@@ -180,7 +180,7 @@ class ActionDict(dict):
             angs.append([y1, 0, 0])
         return angs, 'head'
 
-    # 左歪头 tilting_head_left
+    # tilting_head_left
     @property
     def tilting_head_left(self):
         yaw = 0
@@ -190,7 +190,7 @@ class ActionDict(dict):
             [yaw, roll, pitch]
         ], 'head'
 
-    # 右歪头 tilting_head_right
+    # tilting_head_right
     @property
     def tilting_head_right(self):
         yaw = 0
@@ -200,7 +200,7 @@ class ActionDict(dict):
             [yaw, roll, pitch]
         ], 'head'
 
-    # 左右歪头 tilting_head left and right
+    # tilting_head left and right
     @property
     def tilting_head(self):
         yaw = 0
@@ -209,7 +209,7 @@ class ActionDict(dict):
         return [[yaw, roll, pitch]]*20 \
             + [[yaw, -roll, pitch]]*20, 'head'
 
-    # 仰头吠叫 head_bark
+    # head_bark
     @property
     def head_bark(self):
         return [[0, 0, -40],
@@ -218,7 +218,7 @@ class ActionDict(dict):
                 [0, 0, -40],
                 ], 'head'
 
-    # 摇尾巴 wag_tail
+    # wag_tail
     @property
     def wag_tail(self):
         # amplitude = 50

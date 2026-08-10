@@ -50,6 +50,11 @@ chmod +x scripts/doggie_reboot.sh
 chmod +x scripts/doggie_git_check.sh
 ```
 
+The GPT voice service must be installed from the current
+`examples/deploy/pidog-gpt.service`. It now starts only after `doggie-boot`
+has finished, which prevents both services from initializing the PiDog
+controller at once during a cold boot.
+
 For GPT voice mode secrets, use a root-owned environment file instead of
 `secret.py`:
 
@@ -168,6 +173,22 @@ sudo journalctl -b -1 -n 120 --no-pager
 dmesg -T | tail -n 80
 vcgencmd get_throttled
 ```
+
+If the Pi cannot be reached at all, connect a monitor/keyboard and run this
+local recovery check before changing Wi-Fi credentials:
+
+```bash
+nmcli device status
+nmcli connection show
+sudo rfkill unblock wifi
+sudo nmcli device set wlan0 managed yes
+sudo nmcli device connect wlan0
+```
+
+`bin/pidog_app_install.sh` deliberately configures `wlan0` as the `pidog`
+hotspot (and disables its normal Wi-Fi client). Do not run it on this setup;
+if it was run, restore the normal Wi-Fi configuration before expecting the Pi
+to join a home network.
 
 ## Companion Mode
 

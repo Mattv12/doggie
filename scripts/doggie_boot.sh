@@ -26,17 +26,24 @@ git_pull() {
   fi
 }
 
+# ICMP is often filtered even when HTTPS works.  Test the connection Doggie
+# actually needs for an optional update instead of treating a blocked ping as
+# a network outage.
+network_ready() {
+  timeout 3 bash -c "</dev/tcp/github.com/443" >/dev/null 2>&1
+}
+
 echo "Doggie boot: waiting up to ${NETWORK_TIMEOUT}s for internet..."
 deadline=$((SECONDS + NETWORK_TIMEOUT))
 while [ "$SECONDS" -lt "$deadline" ]; do
-  if ping -c 1 -W 1 github.com >/dev/null 2>&1; then
+  if network_ready; then
     echo "Doggie boot: internet ready."
     break
   fi
   sleep 1
 done
 
-if ping -c 1 -W 1 github.com >/dev/null 2>&1; then
+if network_ready; then
   echo "Doggie boot: pulling ${BRANCH}..."
   git_pull || echo "Doggie boot: git pull skipped or failed."
 else

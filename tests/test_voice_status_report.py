@@ -18,6 +18,7 @@ def test_status_report_contains_network_and_battery():
     dog = VoiceActiveDog.__new__(VoiceActiveDog)
     dog._get_network_status = lambda: {
         "connected": "yes",
+        "internet": True,
         "ssid": "mattsinternet",
         "signal": 84,
         "ip": "10.0.0.55",
@@ -51,6 +52,7 @@ def test_startup_announcement_reports_online_network_and_battery():
     dog = VoiceActiveDog.__new__(VoiceActiveDog)
     dog._get_network_status = lambda: {
         "connected": "yes",
+        "internet": True,
         "ssid": "mattsinternet",
         "signal": 84,
         "ip": "10.0.0.55",
@@ -62,3 +64,21 @@ def test_startup_announcement_reports_online_network_and_battery():
     assert announcement.startswith("Doggie is ready.")
     assert "online on mattsinternet" in announcement
     assert "67.0 percent" in announcement
+
+
+def test_startup_announcement_distinguishes_wifi_from_internet():
+    dog = VoiceActiveDog.__new__(VoiceActiveDog)
+    dog._get_network_status = lambda: {
+        "connected": "yes",
+        "internet": False,
+        "ssid": "mattsinternet",
+        "signal": 84,
+        "ip": "10.0.0.55",
+    }
+    dog.read_battery = lambda: (None, None)
+
+    announcement = dog._build_startup_announcement()
+
+    assert "connected to mattsinternet" in announcement
+    assert "no internet access" in announcement
+    assert "online" not in announcement

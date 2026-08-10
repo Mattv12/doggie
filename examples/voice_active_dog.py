@@ -394,7 +394,26 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # The camera-board power connector currently has insufficient
                 # clearance behind the head. Block every head command at the
                 # PiDog boundary, including animations and preset actions.
+                # Only posture changes may command the two conservative rest
+                # poses below: level when sitting, or slightly downward while
+                # standing/lying.
+                passive_head_move = self.dog.head_move
+                sit_pitch = 0
+                rest_pitch = -5
                 self.dog.head_stop()
+
+                self.action_flow = ActionFlow(self.dog)
+                self.action_flow.SIT_HEAD_PITCH = sit_pitch
+                self.action_flow.STAND_HEAD_PITCH = rest_pitch
+
+                def set_passive_head_pitch(pitch):
+                    safe_pitch = sit_pitch if pitch >= -2 else rest_pitch
+                    self.action_flow.head_pitch_init = safe_pitch
+                    passive_head_move([[0, 0, 0]], pitch_comp=safe_pitch,
+                                      immediately=True, speed=30)
+
+                self.action_flow.set_head_pitch_init = set_passive_head_pitch
+                set_passive_head_pitch(rest_pitch)
 
                 def block_head_motion(*_args, **_kwargs):
                     print("head motion blocked: DOGGIE_HEAD_MOTION_ENABLED=0")
@@ -402,7 +421,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 self.dog.head_move = block_head_motion
                 self.dog.head_move_raw = block_head_motion
                 print("head motion lock enabled")
-            self.action_flow = ActionFlow(self.dog)
+            else:
+                self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
         except Exception as e:
             raise RuntimeError(e)

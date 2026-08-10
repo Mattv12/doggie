@@ -200,7 +200,9 @@ Environment=DOGGIE_HEAD_MOTION_ENABLED=0
 ```
 
 This blocks all head servo commands, including automatic animations and preset
-actions. Set it back to `1` only after the physical clearance issue is fixed.
+actions. While locked, Doggie holds its head level when sitting and about five
+degrees down when standing or lying. Set it back to `1` only after the physical
+clearance issue is fixed.
 
 ## Companion Mode
 

@@ -112,6 +112,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "lie": ("lie down", "lay down", "lie"),
         "learn my face": ("learn my face",),
         "learn my voice": ("learn my voice", "learn my voice print"),
+        "track person": ("track person", "follow the person", "follow me"),
+        "track object": ("track object", "track objects", "follow an object"),
         "bark harder": ("bark harder",),
         "bark": ("bark",),
         "pant": ("pant",),
@@ -237,8 +239,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 return
             try:
                 from picamera2 import Picamera2
-                cam = Picamera2()
-                cam.configure(cam.create_preview_configuration(main={"size": (640, 480)}))
+                from picamera2.devices import IMX500
+                model_path = ("/usr/share/imx500-models/"
+                              "imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk")
+                # Must precede Picamera2 construction: it loads the neural
+                # network into the AI Camera's on-sensor accelerator.
+                ai_camera = IMX500(model_path)
+                intrinsics = ai_camera.network_intrinsics
+                if intrinsics is None or intrinsics.task != "object detection":
+                    raise RuntimeError("AI Camera model is not object detection")
+                intrinsics.update_with_defaults()
+                cam = Picamera2(ai_camera.camera_num)
+                cam.configure(cam.create_preview_configuration(
+                    main={"size": (640, 480)}, buffer_count=8,
+                    controls={"FrameRate": intrinsics.inference_rate}))
+                ai_camera.show_network_fw_progress_bar()
                 cam.start()
                 # garage is dim: default AE tops out at 33ms exposure (30fps
                 # timing) and frames came out very dark. Give AE more room,
@@ -250,6 +265,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     "FrameDurationLimits": (33333, 100000),
                 })
                 _pre["cam"] = cam
+                _pre["ai_camera"] = ai_camera
+                _pre["ai_labels"] = intrinsics.labels or []
             except Exception as e:
                 # Vision is optional. A missing camera must not prevent the
                 # speech-and-motion assistant from starting.
@@ -283,6 +300,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._last_user_text = ""
         self._last_visual_query = False
         self._last_identity_query = False
+        self.ai_camera = _pre.get("ai_camera")
+        self.ai_labels = _pre.get("ai_labels", [])
+        self.ai_track_target = "person"
+        self._last_ai_detections = []
         self._last_stt_audio = b""
         self._last_stt_sample_rate = 16000
         self.voice_identity = OwnerVoice()
@@ -667,7 +688,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     IDLE_ACTIONS = ('waiting', 'feet_left_right')
 
     MODE_ACTIONS = ("balance on", "balance off", "watch me", "stop watching",
-                    "guard on", "guard off", "fetch", "stop fetch")
+                    "track person", "track object", "guard on", "guard off",
+                    "fetch", "stop fetch")
 
     def _setup_balance(self):
         # instance-level copy so we don't mutate the class-level OPERATIONS
@@ -686,6 +708,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.action_flow.OPERATIONS["stop watching"] = {
             "function": lambda flow: self.stop_watch(),
         }
+        self.action_flow.OPERATIONS["track person"] = {
+            "function": lambda flow: self.start_ai_tracking("person"),
+            "poseture": Posetures.SIT,
+        }
+        self.action_flow.OPERATIONS["track object"] = {
+            "function": lambda flow: self.start_ai_tracking("object"),
+            "poseture": Posetures.SIT,
+        }
         orig_run = self.action_flow.run
         def guarded_run(action):
             if self.any_mode_on():
@@ -699,6 +729,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         self.stop_all_modes()
             # modes are mutually exclusive; starting one stops the others
             starters = {"balance on": "balance", "watch me": "watch",
+                        "track person": "watch", "track object": "watch",
                         "guard on": "guard", "fetch": "fetch"}
             if action in starters:
                 self.stop_all_modes(keep=starters[action])
@@ -792,6 +823,42 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self.watch_thread = None
         print("watch mode: OFF")
 
+    def start_ai_tracking(self, target):
+        """Select an on-camera AI class without enabling unsafe walking."""
+        if self.ai_camera is None:
+            print("AI tracking unavailable: AI Camera model did not start")
+            return
+        self.ai_track_target = target
+        self.start_watch()
+        print(f"AI tracking: {target}")
+
+    def _get_ai_detections(self):
+        """Read IMX500 results produced on the camera, not a cloud service."""
+        if self.ai_camera is None:
+            return []
+        try:
+            metadata = self.picam2.capture_metadata()
+            outputs = self.ai_camera.get_outputs(metadata, add_batch=True)
+            if outputs is None:
+                return self._last_ai_detections
+            boxes, scores, classes = outputs[0][0], outputs[1][0], outputs[2][0]
+            detections = []
+            for box, score, category in zip(boxes, scores, classes):
+                if float(score) < 0.50:
+                    continue
+                category = int(category)
+                label = (self.ai_labels[category] if category < len(self.ai_labels)
+                         else f"class {category}")
+                x, y, w, h = self.ai_camera.convert_inference_coords(
+                    box, metadata, self.picam2)
+                detections.append({"label": label.lower(), "score": float(score),
+                                   "box": (int(x), int(y), int(w), int(h))})
+            self._last_ai_detections = detections
+            return detections
+        except Exception as exc:
+            print(f"AI Camera inference warning: {exc}")
+            return self._last_ai_detections
+
     def _watch_loop(self):
         import cv2
         cascade = cv2.CascadeClassifier(
@@ -807,20 +874,31 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(50, 50))
                 if len(faces) > 0:
+                    visible_face = max(faces, key=lambda f: f[2] * f[3])
+                    self.remember_visible_face(cv2, gray, visible_face)
+                detections = self._get_ai_detections()
+                wanted = (detections if self.ai_track_target == "object"
+                          else [item for item in detections
+                                if item["label"] == self.ai_track_target])
+                if wanted:
+                    x, y, w, h = max(wanted, key=lambda item: item["box"][2] * item["box"][3])["box"]
+                elif len(faces) > 0:
                     x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    identity = self.remember_visible_face(cv2, gray, (x, y, w, h))
-                    ex = (x + w / 2.0) - 320
-                    ey = (y + h / 2.0) - 240
-                    if ex > 15 and yaw > -80:
-                        yaw -= 0.5 * int(ex / 30.0 + 0.5)
-                    elif ex < -15 and yaw < 80:
-                        yaw += 0.5 * int(-ex / 30.0 + 0.5)
-                    if ey > 25:
-                        pitch = max(pitch - int(ey / 50.0 + 0.5), -30)
-                    elif ey < -25:
-                        pitch = min(pitch + int(-ey / 50.0 + 0.5), 30)
-                    self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
-                                       immediately=True, speed=100)
+                else:
+                    time.sleep(0.05)
+                    continue
+                ex = (x + w / 2.0) - 320
+                ey = (y + h / 2.0) - 240
+                if ex > 15 and yaw > -80:
+                    yaw -= 0.5 * int(ex / 30.0 + 0.5)
+                elif ex < -15 and yaw < 80:
+                    yaw += 0.5 * int(-ex / 30.0 + 0.5)
+                if ey > 25:
+                    pitch = max(pitch - int(ey / 50.0 + 0.5), -30)
+                elif ey < -25:
+                    pitch = min(pitch + int(-ey / 50.0 + 0.5), 30)
+                self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
+                                   immediately=True, speed=100)
                 time.sleep(0.05)
         except Exception as e:
             print(f"watch loop error: {e}")
@@ -898,6 +976,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         if frame.ndim == 3 and frame.shape[2] == 4:
                             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
                         frame = assistant._brighten(frame, cv2)
+                        # Detection is performed on the IMX500 itself; this
+                        # only draws its latest results on the local stream.
+                        for detection in assistant._last_ai_detections:
+                            x, y, w, h = detection["box"]
+                            label = f'{detection["label"]} {detection["score"]:.0%}'
+                            cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                          (40, 220, 40), 2)
+                            cv2.putText(frame, label, (x, max(16, y - 6)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                        (40, 220, 40), 1, cv2.LINE_AA)
                         ok, jpg = cv2.imencode(".jpg", frame,
                                                [cv2.IMWRITE_JPEG_QUALITY, 80])
                         if not ok:

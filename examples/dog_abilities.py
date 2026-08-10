@@ -69,6 +69,7 @@ class AbilitiesMixin:
         self.fetch_thread = None
         self._owner_samples = None
         self._last_visitor_face_at = 0.0
+        self._last_owner_face_at = 0.0
         self._start_head_life()
 
     def any_mode_on(self):
@@ -361,8 +362,12 @@ class AbilitiesMixin:
     def remember_visible_face(self, cv2, gray, face):
         """Persist a visitor crop locally, or refresh the owner's memory."""
         if self._is_owner(cv2, gray, face):
-            if hasattr(self, "memory"):
+            now = time.time()
+            if (hasattr(self, "memory")
+                    and now - getattr(self, "_last_owner_face_at", 0.0)
+                    >= self.VISITOR_FACE_SAVE_COOLDOWN):
                 self.memory.note_owner_seen(name=OWNER_NAME)
+                self._last_owner_face_at = now
             return "owner"
         now = time.time()
         if now - getattr(self, "_last_visitor_face_at", 0.0) < self.VISITOR_FACE_SAVE_COOLDOWN:

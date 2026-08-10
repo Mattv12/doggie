@@ -106,7 +106,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # available when the cloud model cannot be reached, but walking and
         # turning always require the online decision path and supervision.
         "stop": ("stop", "stop it", "be still", "freeze"),
-        "sit": ("sit", "sit down"),
+        "sit": ("sit", "sit down", "sit up"),
         "stand": ("stand", "stand up"),
         "lie": ("lie down", "lay down", "lie"),
         "bark harder": ("bark harder",),
@@ -398,7 +398,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # poses below: level when sitting, or slightly downward while
                 # standing/lying.
                 passive_head_move = self.dog.head_move
-                sit_pitch = 0
+                # PiDog's mechanical neutral is a little nose-up on this
+                # build.  A small negative compensation keeps the head level
+                # while seated, without allowing its dangerous rear travel.
+                sit_pitch = -12
                 rest_pitch = -5
                 self.dog.head_stop()
 
@@ -409,6 +412,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 def set_passive_head_pitch(pitch):
                     safe_pitch = sit_pitch if pitch >= -2 else rest_pitch
                     self.action_flow.head_pitch_init = safe_pitch
+                    print(f"safe passive head pose: {safe_pitch} degrees")
                     passive_head_move([[0, 0, 0]], pitch_comp=safe_pitch,
                                       immediately=True, speed=30)
 
@@ -420,6 +424,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
                 self.dog.head_move = block_head_motion
                 self.dog.head_move_raw = block_head_motion
+
+                # ActionFlow normally suppresses a consecutive identical
+                # action.  Always restore the known-safe passive pose after
+                # any requested posture so "sit up" reliably re-levels the
+                # head even when Doggie was already sitting.
+                original_change_posture = self.action_flow.change_poseture
+
+                def change_posture_with_safe_head(posture):
+                    original_change_posture(posture)
+                    if posture == Posetures.SIT:
+                        set_passive_head_pitch(sit_pitch)
+                    else:
+                        set_passive_head_pitch(rest_pitch)
+
+                self.action_flow.change_poseture = change_posture_with_safe_head
                 print("head motion lock enabled")
             else:
                 self.action_flow = ActionFlow(self.dog)

@@ -137,7 +137,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # near-sounding words in the garage.  They are accepted only as part
         # of the wake phrase (or as the one-word name fallback below).
         "doggie": {"doggie", "doggy", "dog", "dougie", "duggy",
-                   "dodgy", "dummy", "derby"},
+                   "dodgy", "dummy", "derby", "doug", "jodie", "jody",
+                   "daddy"},
         "hey": {"hey", "hi", "hello", "okay", "ok", "yo", "hay"},
     }
     VISUAL_QUERY_PATTERNS = (
@@ -434,6 +435,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # face-watch mode
         self.watch_on = False
         self.watch_thread = None
+        self.auto_tracking = True
         self._setup_balance()
         self._start_camera_stream()
         self._setup_abilities()
@@ -593,7 +595,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     def after_say(self, text):
         self.action_flow.wait_actions_done()
-
+        self._resume_tracking_when_idle()
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
         self.dog.rgb_strip.close()
 
@@ -673,6 +675,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def on_finish_a_round(self):
         # wait actions done
         self.action_flow.wait_actions_done()
+        self._resume_tracking_when_idle()
         # back to sit
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
         # close rgb strip
@@ -706,7 +709,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             "poseture": Posetures.SIT,
         }
         self.action_flow.OPERATIONS["stop watching"] = {
-            "function": lambda flow: self.stop_watch(),
+            "function": lambda flow: self.stop_watch(manual=True),
         }
         self.action_flow.OPERATIONS["track person"] = {
             "function": lambda flow: self.start_ai_tracking("person"),
@@ -803,6 +806,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     # Tracks the largest face using the voice assistant's own camera stream
     # (no second camera process). Gains and signs match 7_face_track.py.
     def start_watch(self):
+        self.auto_tracking = True
         if self.watch_on:
             return
         if getattr(self, "picam2", None) is None:
@@ -814,7 +818,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.watch_thread.start()
         print("watch mode: ON")
 
-    def stop_watch(self):
+    def stop_watch(self, manual=False):
+        if manual:
+            self.auto_tracking = False
         if not self.watch_on:
             return
         self.watch_on = False
@@ -822,6 +828,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self.watch_thread.join(timeout=3)
             self.watch_thread = None
         print("watch mode: OFF")
+
+    def _resume_tracking_when_idle(self):
+        """Ordinary posture/actions must not permanently disable tracking."""
+        if (getattr(self, "auto_tracking", True)
+                and not self.watch_on
+                and not self.balance_on
+                and not getattr(self, "guard_on", False)
+                and not getattr(self, "fetch_on", False)):
+            self.start_watch()
 
     def start_ai_tracking(self, target):
         """Select an on-camera AI class without enabling unsafe walking."""

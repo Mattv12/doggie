@@ -404,6 +404,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._setup_balance()
         self._start_camera_stream()
         self._setup_abilities()
+        # Default to local face tracking now that the head limiter permits
+        # yaw only. Guard/fetch modes still take exclusive control as needed.
+        self.start_watch()
 
     def init_pidog(self):
         try:
@@ -416,20 +419,26 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # the rear/up motion that can strike the connector.
                 original_head_move = self.dog.head_move
                 original_head_move_raw = self.dog.head_move_raw
-                # Standard PiDog sit uses -35 degrees to tip its nose down.
-                # This robot's -5 calibration was still visibly nose-up, so
-                # -20 is the conservative physical forward/level correction.
-                safe_forward_pitch = -20
+                # Sitting changes the body/head geometry. The standing pose
+                # is correct at -20, while PiDog's standard -35 sit offset is
+                # what brings this build's head back to level when seated.
+                rest_pitch = -20
+                sit_pitch = -35
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
-                self.action_flow.SIT_HEAD_PITCH = safe_forward_pitch
-                self.action_flow.STAND_HEAD_PITCH = safe_forward_pitch
+                self.action_flow.SIT_HEAD_PITCH = sit_pitch
+                self.action_flow.STAND_HEAD_PITCH = rest_pitch
 
-                def set_safe_forward_head(_pitch=safe_forward_pitch):
-                    self.action_flow.head_pitch_init = safe_forward_pitch
+                def current_safe_pitch():
+                    return (sit_pitch if self.action_flow.posture == Posetures.SIT
+                            else rest_pitch)
+
+                def set_safe_forward_head(_pitch=None):
+                    safe_pitch = current_safe_pitch()
+                    self.action_flow.head_pitch_init = safe_pitch
                     original_head_move([[0, 0, 0]],
-                                       pitch_comp=safe_forward_pitch,
+                                       pitch_comp=safe_pitch,
                                        immediately=True, speed=30)
 
                 self.action_flow.set_head_pitch_init = set_safe_forward_head
@@ -439,15 +448,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                            pitch_comp=0, immediately=True,
                                            speed=50):
                     # Preserve left/right tracking only.  Zeroing roll and
-                    # target pitch keeps the physical pitch at -20 degrees.
+                    # target pitch keeps the physical pitch at the safe,
+                    # posture-specific forward angle.
                     safe_targets = [[target[0], 0, 0] for target in target_yrps]
                     original_head_move(safe_targets,
-                                       pitch_comp=safe_forward_pitch,
+                                       pitch_comp=current_safe_pitch(),
                                        immediately=immediately, speed=speed)
 
                 def forward_only_head_move_raw(target_angles, immediately=True,
                                                speed=50):
-                    safe_targets = [[target[0], 0, safe_forward_pitch]
+                    safe_targets = [[target[0], 0, current_safe_pitch()]
                                     for target in target_angles]
                     original_head_move_raw(safe_targets, immediately=immediately,
                                           speed=speed)
@@ -466,7 +476,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: yaw only, pitch fixed at -20 degrees")
+                print("head safety limiter enabled: yaw only; rest=-20, sit=-35 degrees")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
@@ -786,6 +796,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(50, 50))
                 if len(faces) > 0:
                     x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    identity = self.remember_visible_face(cv2, gray, (x, y, w, h))
                     ex = (x + w / 2.0) - 320
                     ey = (y + h / 2.0) - 240
                     if ex > 15 and yaw > -80:

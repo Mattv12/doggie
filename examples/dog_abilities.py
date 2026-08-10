@@ -33,6 +33,7 @@ class AbilitiesMixin:
     GUARD_SAFE = ("bark", "bark harder", "wag tail")  # guard's own reactions
     GUARD_ALERT_COOLDOWN = 12.0
     VISITOR_RETENTION_SECONDS = 60 * 24 * 60 * 60
+    VISITOR_FACE_SAVE_COOLDOWN = 20.0
 
     # ---------- shared mode plumbing ----------
     def _setup_abilities(self):
@@ -67,6 +68,7 @@ class AbilitiesMixin:
         self.fetch_on = False
         self.fetch_thread = None
         self._owner_samples = None
+        self._last_visitor_face_at = 0.0
         self._start_head_life()
 
     def any_mode_on(self):
@@ -355,6 +357,25 @@ class AbilitiesMixin:
         except Exception as exc:
             print(f"owner face check unavailable: {exc}")
             return None
+
+    def remember_visible_face(self, cv2, gray, face):
+        """Persist a visitor crop locally, or refresh the owner's memory."""
+        if self._is_owner(cv2, gray, face):
+            if hasattr(self, "memory"):
+                self.memory.note_owner_seen(name=OWNER_NAME)
+            return "owner"
+        now = time.time()
+        if now - getattr(self, "_last_visitor_face_at", 0.0) < self.VISITOR_FACE_SAVE_COOLDOWN:
+            return "visitor"
+        os.makedirs(VISITOR_FACES_DIR, exist_ok=True)
+        crop = self._crop_face(cv2, gray, face)
+        path = os.path.join(VISITOR_FACES_DIR,
+                            f"seen_{time.strftime('%Y-%m-%d_%H%M%S')}.png")
+        cv2.imwrite(path, crop)
+        self._last_visitor_face_at = now
+        self._purge_expired_visitor_data()
+        print(f"face memory: saved visitor face {path}")
+        return "visitor"
 
     def _purge_expired_visitor_data(self):
         """Keep surveillance evidence local and remove it after 60 days.

@@ -16,6 +16,7 @@ import os
 import random
 import time
 import threading
+from pathlib import Path
 
 from pidog.action_flow import ActionStatus, Posetures
 from pidog.pidog import Pidog
@@ -23,6 +24,7 @@ from pidog.walk import Walk
 
 FACES_DIR = "/home/matt/.pidog_faces/owner"
 GUARD_DIR = "/home/matt/pidog/guard_photos"
+VISITOR_FACES_DIR = "/home/matt/.pidog_faces/visitors"
 OWNER_NAME = "Matt"
 
 
@@ -30,6 +32,7 @@ class AbilitiesMixin:
 
     GUARD_SAFE = ("bark", "bark harder", "wag tail")  # guard's own reactions
     GUARD_ALERT_COOLDOWN = 12.0
+    VISITOR_RETENTION_SECONDS = 60 * 24 * 60 * 60
 
     # ---------- shared mode plumbing ----------
     def _setup_abilities(self):
@@ -334,6 +337,28 @@ class AbilitiesMixin:
             best = max(best, score)
         return best > 0.55
 
+    def _purge_expired_visitor_data(self):
+        """Keep surveillance evidence local and remove it after 60 days.
+
+        Owner enrollment samples live in ``FACES_DIR`` and are deliberately
+        excluded, so they persist until the owner explicitly removes them.
+        """
+        cutoff = time.time() - self.VISITOR_RETENTION_SECONDS
+        removed = 0
+        for directory in (GUARD_DIR, VISITOR_FACES_DIR):
+            path = Path(directory)
+            if not path.is_dir():
+                continue
+            for item in path.iterdir():
+                try:
+                    if item.is_file() and not item.is_symlink() and item.stat().st_mtime < cutoff:
+                        item.unlink()
+                        removed += 1
+                except OSError as exc:
+                    print(f"retention cleanup warning for {item}: {exc}")
+        if removed:
+            print(f"retention cleanup: removed {removed} expired visitor item(s)")
+
     def learn_face(self):
         import cv2
         if getattr(self, "picam2", None) is None:
@@ -389,6 +414,8 @@ class AbilitiesMixin:
     def _guard_loop(self):
         import cv2
         os.makedirs(GUARD_DIR, exist_ok=True)
+        os.makedirs(VISITOR_FACES_DIR, exist_ok=True)
+        self._purge_expired_visitor_data()
         cascade = self._face_cascade(cv2)
         # face forward and hold still so frame-difference means real motion
         self.dog.head_move([[0, 0, 0]], pitch_comp=self.action_flow.head_pitch_init,
@@ -396,8 +423,12 @@ class AbilitiesMixin:
         self.dog.rgb_strip.set_mode('breath', 'red', 0.5)
         prev = None
         last_alert = 0
+        next_cleanup = time.time() + 3600
         try:
             while self.guard_on:
+                if time.time() >= next_cleanup:
+                    self._purge_expired_visitor_data()
+                    next_cleanup = time.time() + 3600
                 bgr, gray = self._grab_gray(cv2)
                 small = cv2.GaussianBlur(cv2.resize(gray, (160, 120)), (5, 5), 0)
                 motion = False
@@ -419,6 +450,10 @@ class AbilitiesMixin:
                         print(f"guard: owner recognized, photo {path}")
                         self.action_flow.add_action("wag tail")
                     else:
+                        for index, face in enumerate(faces):
+                            crop = self._crop_face(cv2, gray, face)
+                            cv2.imwrite(os.path.join(
+                                VISITOR_FACES_DIR, f"{ts}_{index}.png"), crop)
                         print(f"GUARD ALERT: motion={motion} faces={len(faces)} photo {path}")
                         self.action_flow.add_action("bark harder")
                 time.sleep(0.25)

@@ -204,6 +204,16 @@ actions. While locked, Doggie holds its head level when sitting and about five
 degrees down when standing or lying. Set it back to `1` only after the physical
 clearance issue is fixed.
 
+## Local Face and Guard Retention
+
+Doggie keeps all camera, face, and guard data on the Pi. Owner enrollment
+samples in `/home/matt/.pidog_faces/owner` remain until you explicitly remove
+them. Guard snapshots and non-owner face crops are kept locally for 60 days,
+then removed automatically while guard mode is running. They are stored in:
+
+- `/home/matt/pidog/guard_photos`
+- `/home/matt/.pidog_faces/visitors`
+
 ## Companion Mode
 
 `custom_dog.main` now has a lightweight custom companion layer for fast testing.

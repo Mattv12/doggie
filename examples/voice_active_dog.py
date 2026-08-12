@@ -104,7 +104,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     CAMERA_BRIGHTEN_MAX_GAIN = 6.0
     COMMAND_LISTEN_SILENCE = 1.35
     COMMAND_LISTEN_MAX_SECONDS = 8.0
-    FOLLOW_UP_LISTEN_SECONDS = 2.0
+    # This is a one-shot conversational window, not an indefinite listen.
+    # Four seconds gives a person time to begin a natural reply after TTS.
+    FOLLOW_UP_LISTEN_SECONDS = 4.0
     DIRECT_ACTION_PATTERNS = {
         # These are intentionally local, stationary actions.  They remain
         # available when the cloud model cannot be reached, but walking and
@@ -620,7 +622,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         response = getattr(self, "_last_spoken_response", "").strip()
         if not response.endswith("?"):
             return
-        print("follow-up: listening for 2 seconds")
+        print("follow-up: listening for up to 4 seconds")
         self._listen_silence = 0.75
         self._listen_max_seconds = self.FOLLOW_UP_LISTEN_SECONDS
         try:
@@ -630,6 +632,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self._listen_max_seconds = self.COMMAND_LISTEN_MAX_SECONDS
         if reply:
             self._queued_follow_up = reply
+        else:
+            # The follow-up window timed out. Clear the cyan listening state
+            # before returning to normal wake-word monitoring.
+            self.dog.rgb_strip.close()
+            print("follow-up: no reply; returned to wake mode")
 
     def on_heard(self, text):
         self.action_flow.set_status(ActionStatus.THINK)

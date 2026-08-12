@@ -325,6 +325,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._web_server = None
         self._web_server_thread = None
         self._web_sessions = {}
+        self._wake_prefix_until = 0.0
         self.add_trigger(self.trigger_web_command)
 
         # Wake word fix: the library requires the transcription to EXACTLY
@@ -338,7 +339,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 return False
             self._remember_sound_direction()
             hit = self._is_wake_phrase(result, stt_self.wake_words)
+            # The local recognizer sometimes finalizes "hey" before it hears
+            # the name. Keep a brief prefix window so its next audio chunk can
+            # complete the phrase instead of making Matt repeat it.
+            if self._is_wake_prefix(result):
+                self._wake_prefix_until = _time.monotonic() + 2.5
+            elif (_time.monotonic() < self._wake_prefix_until
+                  and self._normalize_phrase(result).split() == ["doggie"]):
+                hit = True
             if hit:
+                self._wake_prefix_until = 0.0
                 self.memory.note_wake_phrase(result)
             print(f"heard: {result}" + ("  [WAKE]" if hit else ""))
             return hit
@@ -406,7 +416,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if stt_self.stop_listening_event.is_set():
                         return None
                     now = _time.time()
-                    if ((last_change is not None and now - last_change > stable_silence)
+                    # Do not cut off immediately after a standalone wake
+                    # prefix. Vosk often emits "hey" first and needs another
+                    # fraction of a second to add "doggie" to the result.
+                    prefix_grace = (1.15 if self._is_wake_prefix(last_partial)
+                                    else stable_silence)
+                    if ((last_change is not None and now - last_change > prefix_grace)
                             or (now - start > max_listen)):
                         text = _json.loads(stt_self.recognizer.FinalResult()).get("text", "").strip()
                         _remember_audio(audio_chunks, samplerate)
@@ -1338,6 +1353,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         for index in range(max(0, len(words) - 1))}
         return ("doggie" in words
                 or any(pair in joined_pairs for pair in {"hey doggie", "okay doggie"}))
+
+    @classmethod
+    def _is_wake_prefix(cls, text: str) -> bool:
+        """True only for a bare greeting that may precede Doggie's name."""
+        return cls._normalize_phrase(text).split() == ["hey"]
 
     def _remember_sound_direction(self) -> None:
         try:

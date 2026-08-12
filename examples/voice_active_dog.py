@@ -102,6 +102,9 @@ Answer length: appropriately detailed
 class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     CAMERA_BRIGHTEN_TARGET = 138
     CAMERA_BRIGHTEN_MAX_GAIN = 6.0
+    COMMAND_LISTEN_SILENCE = 1.35
+    COMMAND_LISTEN_MAX_SECONDS = 8.0
+    FOLLOW_UP_LISTEN_SECONDS = 2.0
     DIRECT_ACTION_PATTERNS = {
         # These are intentionally local, stationary actions.  They remain
         # available when the cloud model cannot be reached, but walking and
@@ -326,7 +329,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._web_server_thread = None
         self._web_sessions = {}
         self._wake_prefix_until = 0.0
+        self._speech_active = False
+        self._queued_follow_up = None
         self.add_trigger(self.trigger_web_command)
+        self.add_trigger(self.trigger_follow_up)
+
+        # Keep visual/head motion quiet while TTS is speaking. This wrapper
+        # also covers messages spoken by individual abilities.
+        original_tts_say = self.tts.say
+        def quiet_tts_say(*args, **kwargs):
+            self._speech_active = True
+            try:
+                return original_tts_say(*args, **kwargs)
+            finally:
+                self._speech_active = False
+        self.tts.say = quiet_tts_say
 
         # Wake word fix: the library requires the transcription to EXACTLY
         # equal a wake word, so any background noise or extra words defeats
@@ -369,6 +386,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
         def _snappy_listen_streaming(stt_self, q, device=None, samplerate=None, callback=None,
                                      stable_silence=0.7, max_utterance=6.0):
+            stable_silence = getattr(self, "_listen_silence",
+                                     self.COMMAND_LISTEN_SILENCE)
+            max_utterance = getattr(self, "_listen_max_seconds",
+                                    self.COMMAND_LISTEN_MAX_SECONDS)
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
                                     dtype="int16", channels=1, callback=callback):
                 audio_chunks = []
@@ -565,6 +586,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._cmd_listening = False
         super().after_listen(stt_result)
 
+    def trigger_follow_up(self):
+        """Feed a just-heard answer into the next assistant round."""
+        message = self._queued_follow_up
+        if not message:
+            return False, False, ""
+        self._queued_follow_up = None
+        print("follow-up: heard a reply")
+        return True, False, message
+
     def before_think(self, text):
         self.dog.rgb_strip.set_mode('listen', 'yellow', 1)
         if self._is_visual_query(text):
@@ -584,6 +614,22 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self.dog.rgb_strip.set_mode('breath', 'pink', 1)
         # Perk up gently—the microphone needs a quiet moment after wake-up.
         self.head_excite(6.0)
+
+    def _listen_for_follow_up(self):
+        """Briefly listen after Doggie explicitly asks the user a question."""
+        response = getattr(self, "_last_spoken_response", "").strip()
+        if not response.endswith("?"):
+            return
+        print("follow-up: listening for 2 seconds")
+        self._listen_silence = 0.75
+        self._listen_max_seconds = self.FOLLOW_UP_LISTEN_SECONDS
+        try:
+            reply = self.listen()
+        finally:
+            self._listen_silence = self.COMMAND_LISTEN_SILENCE
+            self._listen_max_seconds = self.COMMAND_LISTEN_MAX_SECONDS
+        if reply:
+            self._queued_follow_up = reply
 
     def on_heard(self, text):
         self.action_flow.set_status(ActionStatus.THINK)
@@ -618,6 +664,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             and not re.match(r"^\s*actions?\s*:", line, flags=re.IGNORECASE)
         ]
         response_text = "\n".join(lines).strip()
+        self._last_spoken_response = response_text
         actions = self._filter_actions_for_context(actions)
         self.action_flow.add_action(*actions)
 
@@ -718,6 +765,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
         # close rgb strip
         self.dog.rgb_strip.close()
+        self._listen_for_follow_up()
 
 
     # -- IMU balance mode ---------------------------------------------------
@@ -1007,6 +1055,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         pitch = 0.0
         try:
             while self.watch_on:
+                if (getattr(self, "_cmd_listening", False)
+                        or getattr(self, "_speech_active", False)):
+                    # Microphone clarity and natural speech matter more than
+                    # camera centering during a conversation turn.
+                    time.sleep(0.08)
+                    continue
                 frame = self.picam2.capture_array()
                 if frame.ndim == 3 and frame.shape[2] == 4:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)

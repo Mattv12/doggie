@@ -157,12 +157,12 @@ class AbilitiesMixin:
     HEAD_TILT_CHANCE = 0.2        # curious head-tilt probability per glance
     HEAD_TILT = (8, 16)           # deg tilt range
     HEAD_IDLE_SPEED = 18
-    HEAD_AROUSED_GAP = (0.4, 1.2)
-    HEAD_AROUSED_YAW = 26         # deg around the last heard direction
-    HEAD_AROUSED_PITCH = 12
+    HEAD_AROUSED_GAP = (1.4, 2.4)
+    HEAD_AROUSED_YAW = 8          # subtle motion around the heard direction
+    HEAD_AROUSED_PITCH = 3
     # Wake-word motion must stay quiet enough for the microphone to hear the
     # command that immediately follows it.
-    HEAD_AROUSED_SPEED = 30
+    HEAD_AROUSED_SPEED = 18
     AROUSED_SOUND_COOLDOWN = 0.8  # min s between sound turns while aroused
     AROUSED_SOUND_DEADBAND = 10   # ignore sounds near current aim
     VISION_SURVEY_RANGE = (-10, 10)
@@ -270,6 +270,7 @@ class AbilitiesMixin:
                 now = time.time()
                 if (self.any_mode_on()
                         or getattr(self, "_cmd_listening", False)
+                        or getattr(self, "_speech_active", False)
                         or not self.dog.is_head_done()):
                     continue
                 aroused = now < self._head_arousal_until

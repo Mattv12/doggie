@@ -21,6 +21,12 @@ class ActionFlow():
     HEAD_SPEED = 80
     HEAD_ANGLE = 20
     CHANGE_STATUS_SPEED = 60
+    # 9 g leg servos draw their highest current while accelerating a loaded
+    # body.  Keep posture changes and walking well below the original near-max
+    # speed (98) so the battery is not hit by an abrupt all-servo demand.
+    SIT_TO_STAND_SPEED = 71  # sit_2_stand needs a value just above 70
+    WALK_SPEED = 68
+    TURN_SPEED = 72
 
     dog_obj = None
     head_yrp = [0, 0, 0]
@@ -30,19 +36,19 @@ class ActionFlow():
 
     OPERATIONS = {
         "forward": {
-            "function": lambda self: self.dog_obj.do_action('forward', speed=98),
+            "function": lambda self: self.dog_obj.do_action('forward', speed=self.WALK_SPEED),
             "poseture": Posetures.STAND,
         },
         "backward": {
-            "function": lambda self: self.dog_obj.do_action('backward', speed=98),
+            "function": lambda self: self.dog_obj.do_action('backward', speed=self.WALK_SPEED),
             "poseture": Posetures.STAND,
         },
         "turn left": {
-            "function": lambda self: self.dog_obj.do_action('turn_left', speed=98),
+            "function": lambda self: self.dog_obj.do_action('turn_left', speed=self.TURN_SPEED),
             "poseture": Posetures.STAND,
         },
         "turn right": {
-            "function": lambda self: self.dog_obj.do_action('turn_right', speed=98),
+            "function": lambda self: self.dog_obj.do_action('turn_right', speed=self.TURN_SPEED),
             "poseture": Posetures.STAND,
         },
         "stop": {
@@ -191,7 +197,9 @@ class ActionFlow():
         if poseture == Posetures.STAND:
             self.set_head_pitch_init(self.STAND_HEAD_PITCH)
             if self.posture != Posetures.STAND:
-                sit_2_stand(self.dog_obj, speed=75) # speed > 70
+                # Rise progressively rather than snapping the full body weight
+                # onto all eight 9 g servos at once.
+                sit_2_stand(self.dog_obj, speed=self.SIT_TO_STAND_SPEED)
             else:
                self.dog_obj.do_action('stand', speed=self.CHANGE_STATUS_SPEED) 
         elif poseture == Posetures.SIT:

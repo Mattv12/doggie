@@ -7,7 +7,6 @@
 - face:  simple owner recognition (enroll with "learn my face"); template
          matching on equalized 100x100 crops -- good enough for
          owner-vs-stranger in consistent garage lighting
-- fetch: finds and walks to the red ball using HSV color tracking
 
 House rule (same as balance/watch): exactly one mode owns the servos at a
 time, enforced by guarded_run in voice_active_dog.py.
@@ -43,8 +42,6 @@ class AbilitiesMixin:
         ops = self.action_flow.OPERATIONS  # instance copy made in _setup_balance
         ops["guard on"] = {"function": lambda flow: self.start_guard()}
         ops["guard off"] = {"function": lambda flow: self.stop_guard()}
-        ops["fetch"] = {"function": lambda flow: self.start_fetch()}
-        ops["stop fetch"] = {"function": lambda flow: self.stop_fetch()}
         ops["learn my face"] = {"function": lambda flow: self.learn_face()}
         ops["learn my voice"] = {"function": lambda flow: self.learn_voice()}
         # sit-only upward gaze (no "poseture" key: must not force a stand)
@@ -68,8 +65,6 @@ class AbilitiesMixin:
                               "poseture": Posetures.STAND}
         self.guard_on = False
         self.guard_thread = None
-        self.fetch_on = False
-        self.fetch_thread = None
         self._owner_samples = None
         self._owner_embeddings = None
         self._face_models_cache = None
@@ -80,7 +75,7 @@ class AbilitiesMixin:
     def any_mode_on(self):
         return (self.balance_on or self.watch_on
                 or getattr(self, "guard_on", False)
-                or getattr(self, "fetch_on", False))
+                )
 
     def stop_all_modes(self, keep=None):
         if keep != "balance":
@@ -89,8 +84,6 @@ class AbilitiesMixin:
             self.stop_watch()
         if keep != "guard":
             self.stop_guard()
-        if keep != "fetch":
-            self.stop_fetch()
 
     def _grab_gray(self, cv2):
         frame = self.picam2.capture_array()
@@ -167,7 +160,9 @@ class AbilitiesMixin:
     HEAD_AROUSED_GAP = (0.4, 1.2)
     HEAD_AROUSED_YAW = 26         # deg around the last heard direction
     HEAD_AROUSED_PITCH = 12
-    HEAD_AROUSED_SPEED = 78
+    # Wake-word motion must stay quiet enough for the microphone to hear the
+    # command that immediately follows it.
+    HEAD_AROUSED_SPEED = 30
     AROUSED_SOUND_COOLDOWN = 0.8  # min s between sound turns while aroused
     AROUSED_SOUND_DEADBAND = 10   # ignore sounds near current aim
     VISION_SURVEY_RANGE = (-10, 10)
@@ -218,7 +213,7 @@ class AbilitiesMixin:
                     self._sound_yaw = yaw
                     self.dog.head_move([[yaw, 0, 0]],
                                        pitch_comp=self.action_flow.head_pitch_init,
-                                       immediately=True, speed=80)
+                                       immediately=True, speed=30)
                     self._head_yaw = yaw
             except Exception as e:
                 print(f"head_excite error: {e}")
@@ -603,73 +598,3 @@ class AbilitiesMixin:
         finally:
             self.dog.rgb_strip.close()
 
-    # ---------- fetch: find and walk to the red ball ----------
-    def start_fetch(self):
-        if getattr(self, "fetch_on", False):
-            return
-        if getattr(self, "picam2", None) is None:
-            print("fetch: no camera")
-            return
-        self.fetch_on = True
-        self.fetch_thread = threading.Thread(
-            name="fetch_loop", target=self._fetch_loop, daemon=True)
-        self.fetch_thread.start()
-        print("fetch: looking for the red ball")
-
-    def stop_fetch(self):
-        if not getattr(self, "fetch_on", False):
-            return
-        self.fetch_on = False
-        if self.fetch_thread is not None and self.fetch_thread is not threading.current_thread():
-            self.fetch_thread.join(timeout=4)
-        self.fetch_thread = None
-        print("fetch: OFF")
-
-    def _fetch_loop(self):
-        import cv2
-        import numpy as np
-        t0 = time.time()
-        # look slightly down so the floor is in frame
-        self.dog.head_move([[0, 0, -25]], pitch_comp=0, immediately=True, speed=80)
-        last_search_turn = 0
-        try:
-            while self.fetch_on and time.time() - t0 < 90:
-                bgr, _ = self._grab_gray(cv2)
-                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-                m1 = cv2.inRange(hsv, (0, 120, 70), (10, 255, 255))
-                m2 = cv2.inRange(hsv, (170, 120, 70), (180, 255, 255))
-                mask = cv2.morphologyEx(m1 | m2, cv2.MORPH_OPEN,
-                                        np.ones((5, 5), np.uint8))
-                cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                           cv2.CHAIN_APPROX_SIMPLE)
-                ball = max(cnts, key=cv2.contourArea) if cnts else None
-                area = cv2.contourArea(ball) if ball is not None else 0
-                if area < 250:
-                    # no ball in sight: turn in place occasionally to search
-                    if time.time() - last_search_turn > 2.0:
-                        last_search_turn = time.time()
-                        self.dog.do_action('turn_left', speed=98)
-                        self.dog.wait_legs_done()
-                    time.sleep(0.1)
-                    continue
-                x, y, w, h = cv2.boundingRect(ball)
-                err = (x + w / 2.0) - 320
-                dist = self.dog.read_distance()
-                if (0 < dist < 12) or area > 30000:
-                    print("fetch: reached the ball!")
-                    self.dog.do_action('wag_tail', step_count=3, speed=100)
-                    self.dog.do_action('sit', speed=70)
-                    self.dog.wait_all_done()
-                    break
-                if err > 80:
-                    self.dog.do_action('turn_right', speed=98)
-                elif err < -80:
-                    self.dog.do_action('turn_left', speed=98)
-                else:
-                    self.dog.do_action('forward', speed=98)
-                self.dog.wait_legs_done()
-        except Exception as e:
-            print(f"fetch loop error: {e}")
-        finally:
-            self.fetch_on = False
-            print("fetch: done")

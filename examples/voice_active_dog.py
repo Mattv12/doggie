@@ -453,7 +453,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._start_camera_stream()
         self._setup_abilities()
         # Default to local face tracking now that the head limiter permits
-        # yaw only. Guard/fetch modes still take exclusive control as needed.
+        # yaw only. Guard mode still takes exclusive control as needed.
         self.start_watch()
 
     def init_pidog(self):
@@ -497,8 +497,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     # Preserve yaw and allow only a small upward pitch offset.
                     # In PiDog coordinates positive target pitch is upward;
                     # roll and downward/rear travel remain unavailable.
+                    # Face lock is the only case allowed to look slightly
+                    # down; torso/object tracking cannot command it.
+                    downward_limit = -5 if getattr(
+                        self, "_face_tracking_locked", False) else 0
                     safe_targets = [[target[0], 0,
-                                     max(0, min(max_upward_pitch, target[2]))]
+                                     max(downward_limit,
+                                         min(max_upward_pitch, target[2]))]
                                     for target in target_yrps]
                     original_head_move(safe_targets,
                                        pitch_comp=current_safe_pitch(),
@@ -562,7 +567,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def on_wake(self):
         if len(self.answer_on_wake) > 0:
             self.dog.rgb_strip.set_mode('breath', 'pink', 1)
-        # perk up: snap toward the voice, sporadic glances for a few seconds
+        # Perk up gently—the microphone needs a quiet moment after wake-up.
         self.head_excite(6.0)
 
     def on_heard(self, text):
@@ -709,8 +714,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     IDLE_ACTIONS = ('waiting', 'feet_left_right')
 
     MODE_ACTIONS = ("balance on", "balance off", "watch me", "stop watching",
-                    "track person", "track object", "guard on", "guard off",
-                    "fetch", "stop fetch")
+                    "track person", "track object", "guard on", "guard off")
 
     def _setup_balance(self):
         # instance-level copy so we don't mutate the class-level OPERATIONS
@@ -750,8 +754,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         self.stop_all_modes()
             # modes are mutually exclusive; starting one stops the others
             starters = {"balance on": "balance", "watch me": "watch",
-                        "track person": "watch", "track object": "watch",
-                        "guard on": "guard", "fetch": "fetch"}
+            "track person": "watch", "track object": "watch",
+                        "guard on": "guard"}
             if action in starters:
                 self.stop_all_modes(keep=starters[action])
             orig_run(action)
@@ -852,8 +856,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if (getattr(self, "auto_tracking", True)
                 and not self.watch_on
                 and not self.balance_on
-                and not getattr(self, "guard_on", False)
-                and not getattr(self, "fetch_on", False)):
+                and not getattr(self, "guard_on", False)):
             self.start_watch()
 
     def start_ai_tracking(self, target):
@@ -1018,6 +1021,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     self._latest_person_target = None
                     target_box = target
                 if target_box is None:
+                    self._face_tracking_locked = False
                     # A short grace period makes one dropped frame invisible;
                     # after that, sweep until either the AI person/object box
                     # or the nested face box is detected again.
@@ -1026,21 +1030,25 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     time.sleep(0.05)
                     continue
                 x, y, w, h = target_box
+                face_locked = bool(self.ai_track_target == "person" and target
+                                   and target["face"] is not None)
+                self._face_tracking_locked = face_locked
                 self._tracked_at = time.monotonic()
                 self._search_yaw = yaw
                 ex = (x + w / 2.0) - 320
                 ey = (y + h / 2.0) - 240
-                if ex > 15 and yaw > -80:
-                    yaw -= 0.5 * int(ex / 30.0 + 0.5)
-                elif ex < -15 and yaw < 80:
-                    yaw += 0.5 * int(-ex / 30.0 + 0.5)
-                if ey > 25:
-                    pitch = max(pitch - int(ey / 50.0 + 0.5), -30)
-                elif ey < -25:
-                    pitch = min(pitch + int(-ey / 50.0 + 0.5), 30)
+                # Rate-limit each correction and use lower servo speed. This
+                # turns the former snap-to-box behavior into a smooth chase.
+                if abs(ex) > 15:
+                    yaw += max(-2.0, min(2.0, -ex * 0.020))
+                    yaw = max(-80, min(80, yaw))
+                if abs(ey) > 25:
+                    pitch += max(-0.75, min(0.75, -ey * 0.015))
+                    pitch = max(-5 if face_locked else 0,
+                                min(5, pitch))
                 self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
-                                   immediately=True, speed=100)
-                time.sleep(0.05)
+                                   immediately=True, speed=42)
+                time.sleep(0.08)
         except Exception as e:
             print(f"watch loop error: {e}")
             self.watch_on = False
@@ -1061,8 +1069,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             time.sleep(delay)
             if (getattr(self, "auto_tracking", True)
                     and not self.balance_on
-                    and not getattr(self, "guard_on", False)
-                    and not getattr(self, "fetch_on", False)):
+                    and not getattr(self, "guard_on", False)):
                 self.start_watch()
 
 

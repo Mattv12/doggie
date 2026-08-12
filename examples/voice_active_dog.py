@@ -102,6 +102,9 @@ Answer length: appropriately detailed
 class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     CAMERA_BRIGHTEN_TARGET = 138
     CAMERA_BRIGHTEN_MAX_GAIN = 6.0
+    # The Robot HAT capture path is already at its 25 dB hardware maximum.
+    # This modest software boost improves normal-distance speech recognition.
+    MIC_DIGITAL_GAIN = 1.45
     COMMAND_LISTEN_SILENCE = 1.35
     COMMAND_LISTEN_MAX_SECONDS = 8.0
     # This is a one-shot conversational window, not an indefinite listen.
@@ -143,7 +146,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # of the wake phrase (or as the one-word name fallback below).
         "doggie": {"doggie", "doggy", "dog", "dougie", "duggy",
                    "dodgy", "dummy", "derby", "doug", "jodie", "jody",
-                   "daddy"},
+                   "daddy", "doge", "dawg", "doogie", "dougy", "dodge",
+                   "dodgey", "doggiee"},
         "hey": {"hey", "hi", "hello", "okay", "ok", "yo", "hay"},
     }
     VISUAL_QUERY_PATTERNS = (
@@ -362,7 +366,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             # the name. Keep a brief prefix window so its next audio chunk can
             # complete the phrase instead of making Matt repeat it.
             if self._is_wake_prefix(result):
-                self._wake_prefix_until = _time.monotonic() + 2.5
+                self._wake_prefix_until = _time.monotonic() + 5.0
             elif (_time.monotonic() < self._wake_prefix_until
                   and self._normalize_phrase(result).split() == ["doggie"]):
                 hit = True
@@ -377,6 +381,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # endpointer, which is slow and never fires while background noise
         # keeps "speech" going. Instead, finalize once the partial
         # transcription stops changing, with a hard cap as a backstop.
+        import audioop as _audioop
         import json as _json
         import queue as _queue
         import time as _time
@@ -386,6 +391,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self._last_stt_audio = b"".join(chunks)
             self._last_stt_sample_rate = int(sample_rate or self.stt._samplerate)
 
+        def _amplified_callback(callback):
+            def amplified(indata, frames, time_info, status):
+                try:
+                    indata = _audioop.mul(bytes(indata), 2, self.MIC_DIGITAL_GAIN)
+                except Exception as exc:
+                    print(f"microphone gain warning: {exc}")
+                callback(indata, frames, time_info, status)
+            return amplified
+
         def _snappy_listen_streaming(stt_self, q, device=None, samplerate=None, callback=None,
                                      stable_silence=0.7, max_utterance=6.0):
             stable_silence = getattr(self, "_listen_silence",
@@ -393,7 +407,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             max_utterance = getattr(self, "_listen_max_seconds",
                                     self.COMMAND_LISTEN_MAX_SECONDS)
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
-                                    dtype="int16", channels=1, callback=callback):
+                                    dtype="int16", channels=1,
+                                    callback=_amplified_callback(callback)):
                 audio_chunks = []
                 last_partial = ""
                 last_change = None
@@ -430,7 +445,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         def _snappy_listen_non_streaming(stt_self, q, device=None, samplerate=None, callback=None,
                                          stable_silence=0.6, max_listen=4.0):
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
-                                    dtype="int16", channels=1, callback=callback):
+                                dtype="int16", channels=1,
+                                callback=_amplified_callback(callback)):
                 audio_chunks = []
                 last_partial = ""
                 last_change = None

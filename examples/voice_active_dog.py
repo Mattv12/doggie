@@ -465,11 +465,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # never enough to approach the connector.
                 original_head_move = self.dog.head_move
                 original_head_move_raw = self.dog.head_move_raw
-                # Sitting changes the body/head geometry. The standing pose
-                # is correct at -20, while PiDog's standard -35 sit offset is
-                # what brings this build's head back to level when seated.
-                rest_pitch = -20
-                sit_pitch = -35
+                # Sitting changes the body/head geometry. Shift both known
+                # safe neutral positions 5 degrees back/up so the camera does
+                # not sit visibly nose-down: -15 standing, -30 sitting.
+                rest_pitch = -15
+                sit_pitch = -30
                 max_upward_pitch = 5
                 self.dog.head_stop()
 
@@ -528,7 +528,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
                 print("head safety limiter enabled: yaw + 5 degree upward pitch; "
-                      "rest=-20, sit=-35 degrees")
+                      "rest=-15, sit=-30 degrees")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)

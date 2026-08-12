@@ -911,12 +911,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return px <= cx <= px + pw and py <= cy <= py + ph
 
     @staticmethod
-    def _person_regions(person_box):
-        """Split an AI person box into stable head and upper-torso regions."""
+    def _person_regions(person_box, include_torso=True):
+        """Derive a head region and, only when needed, a torso fallback."""
         x, y, w, h = person_box
         head = (x + int(w * 0.16), y, int(w * 0.68), int(h * 0.34))
-        torso = (x + int(w * 0.10), y + int(h * 0.28),
-                 int(w * 0.80), int(h * 0.42))
+        torso = None
+        if include_torso:
+            torso = (x + int(w * 0.10), y + int(h * 0.28),
+                     int(w * 0.80), int(h * 0.42))
         return head, torso
 
     @staticmethod
@@ -946,14 +948,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return -((cx - lx) ** 2 + (cy - ly) ** 2)
 
         person = max(people, key=rank)
-        head, torso = self._person_regions(person)
         matching_faces = [self._box_from_face(face) for face in faces
                           if self._face_is_inside(self._box_from_face(face), person)]
         face = max(matching_faces, key=lambda box: box[2] * box[3]) if matching_faces else None
+        # Face lock is the compact, precise target. Only retain the broader
+        # torso region after a face miss, where it helps reacquire the person.
+        head, torso = self._person_regions(person, include_torso=face is None)
         self._person_lock_center = self._box_center(person)
-        # Aim at the face whenever it is visible.  The head region remains a
-        # useful second-level target when the face detector briefly loses a
-        # profile or someone looks away; torso is the final reacquisition box.
+        # Face lock needs no torso tracking. On a face miss, head then torso
+        # provide a stable path back to the same person.
         return {"person": person, "head": head, "torso": torso,
                 "face": face, "aim": face or head or torso}
 

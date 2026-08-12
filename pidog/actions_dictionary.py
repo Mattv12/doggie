@@ -4,6 +4,17 @@ from .walk import Walk
 from .trot import Trot
 from math import sin
 
+
+class GentleWalk(Walk):
+    """Short, low foot-lift gait for a heavier PiDog build.
+
+    More samples make the foot path continuous while the shorter stride keeps
+    the body from lurching forward between supports.
+    """
+    STEP_COUNT = 8
+    LEG_STEP_HEIGHT = 14
+    LEG_STEP_WIDTH = 52
+
 # ActionDict: - > angles_dict
 class ActionDict(dict):
 
@@ -59,7 +70,7 @@ class ActionDict(dict):
     @property
     def forward(self):
         data = []
-        forward = Walk(fb=Walk.FORWARD, lr=Walk.STRAIGHT)
+        forward = GentleWalk(fb=Walk.FORWARD, lr=Walk.STRAIGHT)
         coords = forward.get_coords()
         for coord in coords:
             data.append(Pidog.legs_angle_calculation(coord))
@@ -69,7 +80,7 @@ class ActionDict(dict):
     @property
     def backward(self):
         data = []
-        backward = Walk(fb=Walk.BACKWARD, lr=Walk.STRAIGHT)
+        backward = GentleWalk(fb=Walk.BACKWARD, lr=Walk.STRAIGHT)
         coords = backward.get_coords()
         for coord in coords:
             data.append(Pidog.legs_angle_calculation(coord))

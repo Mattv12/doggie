@@ -24,8 +24,8 @@ class ActionFlow():
     # 9 g leg servos draw their highest current while accelerating a loaded
     # body.  Keep posture changes and walking well below the original near-max
     # speed (98) so the battery is not hit by an abrupt all-servo demand.
-    SIT_TO_STAND_SPEED = 71  # sit_2_stand needs a value just above 70
-    WALK_SPEED = 68
+    SIT_TO_STAND_SPEED = 42
+    WALK_SPEED = 52
     TURN_SPEED = 72
 
     dog_obj = None
@@ -197,9 +197,10 @@ class ActionFlow():
         if poseture == Posetures.STAND:
             self.set_head_pitch_init(self.STAND_HEAD_PITCH)
             if self.posture != Posetures.STAND:
-                # Rise progressively rather than snapping the full body weight
-                # onto all eight 9 g servos at once.
-                sit_2_stand(self.dog_obj, speed=self.SIT_TO_STAND_SPEED)
+                # Use several small position changes at a low rate.  The stock
+                # rise has only one intermediate pose and needs a speed above
+                # 70, which is too abrupt for this heavier build.
+                self._gentle_sit_to_stand()
             else:
                self.dog_obj.do_action('stand', speed=self.CHANGE_STATUS_SPEED) 
         elif poseture == Posetures.SIT:
@@ -211,6 +212,20 @@ class ActionFlow():
         
         self.posture = poseture
         self.dog_obj.wait_all_done()
+
+    def _gentle_sit_to_stand(self):
+        """Lift a heavier Doggie in small, low-acceleration steps."""
+        sit = self.dog_obj.actions_dict['sit'][0][0]
+        stand = self.dog_obj.actions_dict['stand'][0][0]
+        # Include the source pose so the first commanded change is tiny.  This
+        # produces six evenly spaced rises rather than the stock two-pose snap.
+        frames = [
+            [round(start + (target - start) * portion)
+             for start, target in zip(sit, stand)]
+            for portion in (0.16, 0.32, 0.48, 0.64, 0.80, 1.0)
+        ]
+        self.dog_obj.legs_move(frames, immediately=False,
+                               speed=self.SIT_TO_STAND_SPEED)
 
 
     def run(self, action):

@@ -317,6 +317,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._latest_faces_at = 0.0
         self._latest_person_target = None
         self._person_lock_center = None
+        self._watch_failure_times = []
         self._last_stt_audio = b""
         self._last_stt_sample_rate = 16000
         self.voice_identity = OwnerVoice()
@@ -1004,8 +1005,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if target and target["face"] is not None:
                         for raw_face in faces:
                             if self._box_from_face(raw_face) == target["face"]:
-                                target["identity"] = self.remember_visible_face(
-                                    cv2, frame, gray, raw_face)
+                                try:
+                                    target["identity"] = self.remember_visible_face(
+                                        cv2, frame, gray, raw_face)
+                                except Exception as exc:
+                                    # Identity is an enhancement, never a
+                                    # reason to lose the person tracker.
+                                    print(f"face recognition warning: {exc}")
+                                    target["identity"] = "unavailable"
                                 break
                 else:
                     self._latest_person_target = None
@@ -1037,6 +1044,26 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         except Exception as e:
             print(f"watch loop error: {e}")
             self.watch_on = False
+            now = time.monotonic()
+            self._watch_failure_times = [t for t in self._watch_failure_times
+                                         if now - t < 60.0]
+            self._watch_failure_times.append(now)
+            if len(self._watch_failure_times) >= 3:
+                # A thread failure does not end the Python service, so let
+                # systemd's existing Restart=always policy rebuild the camera
+                # and all tracking state after repeated failures.
+                print("watch loop failed repeatedly; restarting pidog-gpt service")
+                os._exit(1)
+            # One bad frame or recognition result should recover locally and
+            # retain the rest of the assistant session.
+            delay = float(len(self._watch_failure_times))
+            print(f"watch mode: retrying after {delay:.0f}s")
+            time.sleep(delay)
+            if (getattr(self, "auto_tracking", True)
+                    and not self.balance_on
+                    and not getattr(self, "guard_on", False)
+                    and not getattr(self, "fetch_on", False)):
+                self.start_watch()
 
 
     # -- live camera stream ---------------------------------------------------

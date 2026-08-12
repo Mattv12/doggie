@@ -358,7 +358,19 @@ class AbilitiesMixin:
 
     def _crop_face(self, cv2, gray, face):
         x, y, w, h = (int(v) for v in face[:4])
-        crop = gray[y:y + h, x:x + w]
+        if gray is None or getattr(gray, "size", 0) == 0:
+            return None
+        # YuNet can report a box that slightly extends past the frame edge.
+        # Clamp it before slicing so OpenCV never receives an empty crop.
+        x = max(0, min(x, gray.shape[1]))
+        y = max(0, min(y, gray.shape[0]))
+        right = max(x, min(x + w, gray.shape[1]))
+        bottom = max(y, min(y + h, gray.shape[0]))
+        if right <= x or bottom <= y:
+            return None
+        crop = gray[y:bottom, x:right]
+        if crop.size == 0:
+            return None
         crop = cv2.resize(crop, (100, 100))
         return cv2.equalizeHist(crop)
 
@@ -376,8 +388,12 @@ class AbilitiesMixin:
         if not models:
             return None
         _, recognizer = models
-        aligned = recognizer.alignCrop(bgr, face)
-        return recognizer.feature(aligned)
+        try:
+            aligned = recognizer.alignCrop(bgr, face)
+            return recognizer.feature(aligned)
+        except Exception as exc:
+            print(f"face embedding unavailable: {exc}")
+            return None
 
     def _is_owner(self, cv2, gray, face, bgr=None):
         if bgr is not None:
@@ -386,7 +402,8 @@ class AbilitiesMixin:
             if embedding is not None and len(samples):
                 # SFace cosine matching is robust to pose/lighting unlike the
                 # old equalized-pixel template comparison.
-                scores = [float(cv2.FaceRecognizerSF.match(
+                _, recognizer = self._face_models(cv2)
+                scores = [float(recognizer.match(
                     embedding, sample, cv2.FaceRecognizerSF_FR_COSINE))
                           for sample in samples]
                 return max(scores, default=0.0) >= 0.45
@@ -394,6 +411,8 @@ class AbilitiesMixin:
         if not samples:
             return False
         crop = self._crop_face(cv2, gray, face)
+        if crop is None:
+            return False
         best = 0.0
         for s in samples:
             score = float(cv2.matchTemplate(crop, s, cv2.TM_CCOEFF_NORMED)[0][0])
@@ -432,6 +451,9 @@ class AbilitiesMixin:
             return "visitor"
         os.makedirs(VISITOR_FACES_DIR, exist_ok=True)
         crop = self._crop_face(cv2, gray, face)
+        if crop is None:
+            print("face memory: ignored invalid face crop")
+            return "unavailable"
         path = os.path.join(VISITOR_FACES_DIR,
                             f"seen_{time.strftime('%Y-%m-%d_%H%M%S')}.png")
         cv2.imwrite(path, crop)
@@ -478,6 +500,9 @@ class AbilitiesMixin:
             if len(faces) > 0:
                 face = max(faces, key=lambda f: f[2] * f[3])
                 crop = self._crop_face(cv2, gray, face)
+                if crop is None:
+                    time.sleep(0.1)
+                    continue
                 cv2.imwrite(os.path.join(
                     FACES_DIR, f"owner_{int(time.time() * 1000)}.png"), crop)
                 embedding = self._face_embedding(cv2, bgr, face)
@@ -566,8 +591,9 @@ class AbilitiesMixin:
                     else:
                         for index, face in enumerate(faces):
                             crop = self._crop_face(cv2, gray, face)
-                            cv2.imwrite(os.path.join(
-                                VISITOR_FACES_DIR, f"{ts}_{index}.png"), crop)
+                            if crop is not None:
+                                cv2.imwrite(os.path.join(
+                                    VISITOR_FACES_DIR, f"{ts}_{index}.png"), crop)
                         print(f"GUARD ALERT: motion={motion} faces={len(faces)} photo {path}")
                         self.action_flow.add_action("bark harder")
                 time.sleep(0.25)

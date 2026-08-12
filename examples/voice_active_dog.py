@@ -305,6 +305,18 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.ai_labels = _pre.get("ai_labels", [])
         self.ai_track_target = "person"
         self._last_ai_detections = []
+        # Tracking state is deliberately separate from detection state. A
+        # detector can miss a frame when somebody turns or the exposure
+        # changes; a brief grace period avoids jitter, then a head-only scan
+        # reacquires the target without following stale AI-camera results.
+        self._tracked_at = 0.0
+        self._search_yaw = 0.0
+        self._search_direction = 1.0
+        self._last_search_at = 0.0
+        self._latest_faces = []
+        self._latest_faces_at = 0.0
+        self._latest_person_target = None
+        self._person_lock_center = None
         self._last_stt_audio = b""
         self._last_stt_sample_rate = 16000
         self.voice_identity = OwnerVoice()
@@ -855,7 +867,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             metadata = self.picam2.capture_metadata()
             outputs = self.ai_camera.get_outputs(metadata, add_batch=True)
             if outputs is None:
-                return self._last_ai_detections
+                # There is no fresh inference result yet.  Do not report old
+                # boxes as a live target: that prevents the search path below
+                # from reacquiring someone who has moved out of frame.
+                return []
             boxes, scores, classes = outputs[0][0], outputs[1][0], outputs[2][0]
             detections = []
             for box, score, category in zip(boxes, scores, classes):
@@ -874,6 +889,91 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             print(f"AI Camera inference warning: {exc}")
             return self._last_ai_detections
 
+    @staticmethod
+    def _box_from_face(face):
+        """Normalize Haar (x,y,w,h) and YuNet face rows to x,y,w,h."""
+        return tuple(int(v) for v in face[:4])
+
+    @staticmethod
+    def _face_is_inside(face_box, person_box):
+        fx, fy, fw, fh = face_box
+        px, py, pw, ph = person_box
+        cx, cy = fx + fw / 2.0, fy + fh / 2.0
+        return px <= cx <= px + pw and py <= cy <= py + ph
+
+    @staticmethod
+    def _person_regions(person_box):
+        """Split an AI person box into stable head and upper-torso regions."""
+        x, y, w, h = person_box
+        head = (x + int(w * 0.16), y, int(w * 0.68), int(h * 0.34))
+        torso = (x + int(w * 0.10), y + int(h * 0.28),
+                 int(w * 0.80), int(h * 0.42))
+        return head, torso
+
+    @staticmethod
+    def _box_center(box):
+        x, y, w, h = box
+        return x + w / 2.0, y + h / 2.0
+
+    def _choose_person_target(self, detections, faces):
+        """Lock one person, associate its face, and retain torso fallback."""
+        people = [d["box"] for d in detections if d["label"] == "person"]
+        if not people:
+            if not faces:
+                return None
+            face = max((self._box_from_face(item) for item in faces),
+                       key=lambda box: box[2] * box[3])
+            # A face-only result can still be aimed at, but is visibly marked
+            # as such until the AI model finds the full person again.
+            return {"person": None, "head": face, "torso": None,
+                    "face": face, "aim": face}
+
+        def rank(person):
+            if self._person_lock_center is None:
+                return person[2] * person[3]
+            cx, cy = self._box_center(person)
+            lx, ly = self._person_lock_center
+            # Prefer continuity over a newly entering, larger bystander.
+            return -((cx - lx) ** 2 + (cy - ly) ** 2)
+
+        person = max(people, key=rank)
+        head, torso = self._person_regions(person)
+        matching_faces = [self._box_from_face(face) for face in faces
+                          if self._face_is_inside(self._box_from_face(face), person)]
+        face = max(matching_faces, key=lambda box: box[2] * box[3]) if matching_faces else None
+        self._person_lock_center = self._box_center(person)
+        # Aim at the face whenever it is visible.  The head region remains a
+        # useful second-level target when the face detector briefly loses a
+        # profile or someone looks away; torso is the final reacquisition box.
+        return {"person": person, "head": head, "torso": torso,
+                "face": face, "aim": face or head or torso}
+
+    def _choose_tracking_box(self, detections, faces):
+        """Return the finest stable target appropriate for the requested mode."""
+        if self.ai_track_target == "object":
+            candidates = [d for d in detections if d["label"] != "person"]
+            return (max(candidates, key=lambda d: d["box"][2] * d["box"][3])["box"]
+                    if candidates else None)
+        return self._choose_person_target(detections, faces)
+
+    def _search_for_target(self, yaw, pitch):
+        """Sweep the head slowly when vision loses its target.
+
+        This is intentionally head-only: reacquisition must never cause the
+        dog to walk after a person/object disappears.
+        """
+        now = time.monotonic()
+        if now - self._last_search_at < 0.30:
+            return yaw, pitch
+        self._last_search_at = now
+        self._search_yaw += 8.0 * self._search_direction
+        if abs(self._search_yaw) >= 78:
+            self._search_yaw = max(-78, min(78, self._search_yaw))
+            self._search_direction *= -1.0
+        self.dog.head_move([[self._search_yaw, 0, pitch]], pitch_comp=-35,
+                           immediately=True, speed=55)
+        return self._search_yaw, pitch
+
     def _watch_loop(self):
         import cv2
         yaw = 0.0
@@ -886,20 +986,36 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 frame = self._brighten(frame, cv2)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 faces = self.detect_faces(cv2, frame, gray)
-                if len(faces) > 0:
-                    visible_face = max(faces, key=lambda f: f[2] * f[3])
-                    self.remember_visible_face(cv2, frame, gray, visible_face)
+                self._latest_faces = [self._box_from_face(face) for face in faces]
+                self._latest_faces_at = time.monotonic()
                 detections = self._get_ai_detections()
-                wanted = (detections if self.ai_track_target == "object"
-                          else [item for item in detections
-                                if item["label"] == self.ai_track_target])
-                if wanted:
-                    x, y, w, h = max(wanted, key=lambda item: item["box"][2] * item["box"][3])["box"]
-                elif len(faces) > 0:
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                target = self._choose_tracking_box(detections, faces)
+                if self.ai_track_target == "person":
+                    self._latest_person_target = target
+                    target_box = target["aim"] if target else None
+                    # Recognition follows the associated face, not simply the
+                    # largest face anywhere in frame, so a bystander cannot
+                    # overwrite the active person's identity status.
+                    if target and target["face"] is not None:
+                        for raw_face in faces:
+                            if self._box_from_face(raw_face) == target["face"]:
+                                target["identity"] = self.remember_visible_face(
+                                    cv2, frame, gray, raw_face)
+                                break
                 else:
+                    self._latest_person_target = None
+                    target_box = target
+                if target_box is None:
+                    # A short grace period makes one dropped frame invisible;
+                    # after that, sweep until either the AI person/object box
+                    # or the nested face box is detected again.
+                    if time.monotonic() - self._tracked_at > 0.35:
+                        yaw, pitch = self._search_for_target(yaw, pitch)
                     time.sleep(0.05)
                     continue
+                x, y, w, h = target_box
+                self._tracked_at = time.monotonic()
+                self._search_yaw = yaw
                 ex = (x + w / 2.0) - 320
                 ey = (y + h / 2.0) - 240
                 if ex > 15 and yaw > -80:
@@ -999,6 +1115,49 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                             cv2.putText(frame, label, (x, max(16, y - 6)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                                         (40, 220, 40), 1, cv2.LINE_AA)
+                        # The face overlay is intentionally a second, nested
+                        # box rather than a replacement for the AI person
+                        # box.  It makes it clear that Doggie sees both the
+                        # whole person and the face used for face tracking.
+                        if time.monotonic() - assistant._latest_faces_at < 0.8:
+                            people = [d["box"] for d in assistant._last_ai_detections
+                                      if d["label"] == "person"]
+                            for x, y, w, h in assistant._latest_faces:
+                                nested = any(assistant._face_is_inside(
+                                    (x, y, w, h), person) for person in people)
+                                color = (255, 190, 40) if nested else (255, 120, 40)
+                                label = "face (person)" if nested else "face"
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              color, 2)
+                                cv2.putText(frame, label, (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                            color, 1, cv2.LINE_AA)
+                        target = assistant._latest_person_target
+                        if target:
+                            # These regions are derived from the AI person
+                            # box. They let the operator see the hierarchy:
+                            # full body -> head/upper torso -> recognized face.
+                            if target["head"]:
+                                x, y, w, h = target["head"]
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (80, 220, 255), 1)
+                                cv2.putText(frame, "head target", (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                            (80, 220, 255), 1, cv2.LINE_AA)
+                            if target["torso"]:
+                                x, y, w, h = target["torso"]
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (255, 90, 220), 1)
+                                cv2.putText(frame, "upper torso", (x, y + 16),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                            (255, 90, 220), 1, cv2.LINE_AA)
+                            if target.get("identity") and target["face"]:
+                                x, y, _, _ = target["face"]
+                                identity = ("owner" if target["identity"] == "owner"
+                                            else "unrecognized person")
+                                cv2.putText(frame, identity, (x, y + 18),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                            (40, 255, 255), 1, cv2.LINE_AA)
                         ok, jpg = cv2.imencode(".jpg", frame,
                                                [cv2.IMWRITE_JPEG_QUALITY, 80])
                         if not ok:

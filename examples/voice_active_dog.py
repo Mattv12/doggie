@@ -459,11 +459,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         try:
             self.dog = Pidog()
             if os.environ.get("DOGGIE_HEAD_MOTION_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
-                # The camera-board power connector has insufficient clearance
-                # behind the head.  Keep the head active for yaw tracking,
-                # but force its pitch to a fixed 5-degree forward/down pose.
-                # This replaces the old total head lock while still ruling out
-                # the rear/up motion that can strike the connector.
+                # The camera-board power connector limits rear/up travel. Keep
+                # yaw tracking, and allow just five degrees of upward pitch
+                # from the known-safe posture angle—enough to frame a face,
+                # never enough to approach the connector.
                 original_head_move = self.dog.head_move
                 original_head_move_raw = self.dog.head_move_raw
                 # Sitting changes the body/head geometry. The standing pose
@@ -471,6 +470,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # what brings this build's head back to level when seated.
                 rest_pitch = -20
                 sit_pitch = -35
+                max_upward_pitch = 5
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
@@ -491,26 +491,30 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 self.action_flow.set_head_pitch_init = set_safe_forward_head
                 set_safe_forward_head()
 
-                def forward_only_head_move(target_yrps, roll_comp=0,
-                                           pitch_comp=0, immediately=True,
-                                           speed=50):
-                    # Preserve left/right tracking only.  Zeroing roll and
-                    # target pitch keeps the physical pitch at the safe,
-                    # posture-specific forward angle.
-                    safe_targets = [[target[0], 0, 0] for target in target_yrps]
+                def limited_head_move(target_yrps, roll_comp=0, pitch_comp=0,
+                                      immediately=True, speed=50):
+                    # Preserve yaw and allow only a small upward pitch offset.
+                    # In PiDog coordinates positive target pitch is upward;
+                    # roll and downward/rear travel remain unavailable.
+                    safe_targets = [[target[0], 0,
+                                     max(0, min(max_upward_pitch, target[2]))]
+                                    for target in target_yrps]
                     original_head_move(safe_targets,
                                        pitch_comp=current_safe_pitch(),
                                        immediately=immediately, speed=speed)
 
-                def forward_only_head_move_raw(target_angles, immediately=True,
-                                               speed=50):
-                    safe_targets = [[target[0], 0, current_safe_pitch()]
+                def limited_head_move_raw(target_angles, immediately=True,
+                                          speed=50):
+                    safe_pitch = current_safe_pitch()
+                    safe_targets = [[target[0], 0,
+                                     max(safe_pitch, min(safe_pitch + max_upward_pitch,
+                                                         target[2]))]
                                     for target in target_angles]
                     original_head_move_raw(safe_targets, immediately=immediately,
                                           speed=speed)
 
-                self.dog.head_move = forward_only_head_move
-                self.dog.head_move_raw = forward_only_head_move_raw
+                self.dog.head_move = limited_head_move
+                self.dog.head_move_raw = limited_head_move_raw
 
                 # ActionFlow normally suppresses a consecutive identical
                 # action.  Always restore the known-safe passive pose after
@@ -523,7 +527,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: yaw only; rest=-20, sit=-35 degrees")
+                print("head safety limiter enabled: yaw + 5 degree upward pitch; "
+                      "rest=-20, sit=-35 degrees")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)

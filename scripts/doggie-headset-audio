@@ -72,16 +72,21 @@ enable() {
     exit 1
   }
 
-  # A headset microphone requires an HFP/HSP profile. Prefer wideband mSBC.
-  # PulseAudio's native BlueZ module calls this profile
-  # "handsfree_head_unit"; PipeWire/PulseAudio variants use either of the
-  # hyphenated names below.
-  for profile in handsfree_head_unit headset-head-unit-msbc headset-head-unit; do
-    if pactl_cmd set-card-profile "$card" "$profile" 2>/dev/null; then break; fi
+  # A headset microphone requires an HFP/HSP profile. Sony headsets can take
+  # several seconds to expose it after reconnecting, so retry before failing.
+  # PulseAudio's native BlueZ module calls it "handsfree_head_unit"; other
+  # implementations use either of the hyphenated names below.
+  bt_sink=""
+  bt_source=""
+  for _ in $(seq 1 12); do
+    for profile in handsfree_head_unit headset-head-unit-msbc headset-head-unit; do
+      pactl_cmd set-card-profile "$card" "$profile" 2>/dev/null || true
+    done
+    sleep 1
+    bt_sink="$(sink_for_card "$card")"
+    bt_source="$(source_for_card "$card")"
+    [[ -n "$bt_sink" && -n "$bt_source" ]] && break
   done
-  sleep 1
-  bt_sink="$(sink_for_card "$card")"
-  bt_source="$(source_for_card "$card")"
   [[ -n "$bt_sink" && -n "$bt_source" ]] || {
     echo "The headset connected, but did not expose both a speaker and microphone." >&2
     exit 1

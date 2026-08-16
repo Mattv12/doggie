@@ -538,6 +538,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 rest_pitch = -15
                 sit_pitch = -30
                 sit_person_upward_pitch = 10
+                sit_face_upward_pitch = 15
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
@@ -549,7 +550,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                             else rest_pitch)
 
                 def upward_pitch_limit():
-                    """Allow a seated, confirmed-person lock to search upward."""
+                    """Let a seated person search become slightly higher on face lock."""
+                    if (self.action_flow.posture == Posetures.SIT
+                            and getattr(self, "_face_tracking_locked", False)):
+                        return sit_face_upward_pitch
                     if (self.action_flow.posture == Posetures.SIT
                             and getattr(self, "_person_tracking_locked", False)):
                         return sit_person_upward_pitch
@@ -605,9 +609,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: 10 degree look-up only while "
-                      "seated and locked to a confirmed person; stand/lie stay "
-                      "forward; rest=-15, sit=-30")
+                print("head safety limiter enabled: seated person search=10 degrees, "
+                      "seated face lock=15 degrees; stand/lie stay forward; "
+                      "rest=-15, sit=-30")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
@@ -1336,7 +1340,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     yaw = max(-80, min(80, yaw))
                 if abs(ey) > 25:
                     pitch += max(-0.75, min(0.75, -ey * 0.015))
-                    upward_limit = (10 if person_locked
+                    upward_limit = (15 if face_locked
+                                    and self.action_flow.posture == Posetures.SIT
+                                    else 10 if person_locked
                                     and self.action_flow.posture == Posetures.SIT
                                     else 0)
                     pitch = max(-5 if face_locked else 0,

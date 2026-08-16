@@ -605,8 +605,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: 10 degree look-up only for "
-                      "seated face lock; stand/lie stay forward; rest=-15, sit=-30")
+                print("head safety limiter enabled: 10 degree look-up only while "
+                      "seated and locked to a confirmed person; stand/lie stay "
+                      "forward; rest=-15, sit=-30")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)

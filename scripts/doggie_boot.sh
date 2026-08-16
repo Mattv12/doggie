@@ -11,6 +11,7 @@ BOOT_ARGS="${DOGGIE_BOOT_ARGS:-}"
 START_DELAY="${DOGGIE_START_DELAY:-8}"
 BOOT_RETRIES="${DOGGIE_BOOT_RETRIES:-3}"
 BOOT_RETRY_DELAY="${DOGGIE_BOOT_RETRY_DELAY:-5}"
+AUTO_UPDATE="${DOGGIE_AUTO_UPDATE:-0}"
 
 cd "$REPO_DIR" || exit 1
 
@@ -43,11 +44,13 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 1
 done
 
-if network_ready; then
+if [ "$AUTO_UPDATE" = "1" ] && network_ready; then
   echo "Doggie boot: pulling ${BRANCH}..."
   git_pull || echo "Doggie boot: git pull skipped or failed."
-else
+elif [ "$AUTO_UPDATE" = "1" ]; then
   echo "Doggie boot: no internet yet, starting local code."
+else
+  echo "Doggie boot: automatic Git updates disabled; starting local code."
 fi
 
 if [ "$START_DELAY" -gt 0 ] 2>/dev/null; then

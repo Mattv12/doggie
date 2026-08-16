@@ -105,6 +105,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     # The Robot HAT capture path is already at its 25 dB hardware maximum.
     # This modest software boost improves normal-distance speech recognition.
     MIC_DIGITAL_GAIN = 1.45
+    # Run the CPU pose/hand landmark models at a modest cadence. The IMX500
+    # still performs the main object detection on-camera every frame.
+    HUMAN_FEATURE_INTERVAL_S = 0.80
+    TORSO_PERSON_CONFIDENCE = 0.90
     COMMAND_LISTEN_SILENCE = 1.35
     COMMAND_LISTEN_MAX_SECONDS = 8.0
     # This is a one-shot conversational window, not an indefinite listen.
@@ -316,6 +320,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.ai_labels = _pre.get("ai_labels", [])
         self.ai_track_target = "person"
         self._last_ai_detections = []
+        self._human_features = {"hands": [], "arms": [], "torso": None,
+                                "timestamp": 0.0}
+        self._human_pose = None
+        self._hand_tracker = None
+        self._last_human_feature_at = 0.0
         # Tracking state is deliberately separate from detection state. A
         # detector can miss a frame when somebody turns or the exposure
         # changes; a brief grace period avoids jitter, then a head-only scan
@@ -1035,6 +1044,80 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             print(f"AI Camera inference warning: {exc}")
             return self._last_ai_detections
 
+    def _detect_human_features(self, frame, cv2):
+        """Find torso, arm, and hand landmarks with lightweight local models."""
+        now = time.monotonic()
+        if now - self._last_human_feature_at < self.HUMAN_FEATURE_INTERVAL_S:
+            return self._human_features
+        self._last_human_feature_at = now
+        try:
+            import mediapipe as mp
+
+            if self._human_pose is None:
+                self._human_pose = mp.solutions.pose.Pose(
+                    static_image_mode=False, model_complexity=0,
+                    enable_segmentation=False, min_detection_confidence=0.55,
+                    min_tracking_confidence=0.55,
+                )
+                self._hand_tracker = mp.solutions.hands.Hands(
+                    static_image_mode=False, max_num_hands=2, model_complexity=0,
+                    min_detection_confidence=0.55, min_tracking_confidence=0.55,
+                )
+
+            height, width = frame.shape[:2]
+            # 320x240 is sufficient for landmarks and keeps this auxiliary
+            # CPU work from competing with the AI-camera detector.
+            small = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            pose_result = self._human_pose.process(rgb)
+            hand_result = self._hand_tracker.process(rgb)
+            features = {"hands": [], "arms": [], "torso": None,
+                        "timestamp": now}
+
+            if pose_result.pose_landmarks:
+                landmarks = pose_result.pose_landmarks.landmark
+
+                def point(index, minimum=0.45):
+                    landmark = landmarks[index]
+                    if landmark.visibility < minimum:
+                        return None
+                    return int(landmark.x * width), int(landmark.y * height)
+
+                # MediaPipe Pose: shoulders 11/12, elbows 13/14, wrists 15/16,
+                # hips 23/24. Four stable torso anchors are strong evidence of
+                # a human shape and reject ordinary bags and boxes.
+                left_shoulder, right_shoulder = point(11, 0.55), point(12, 0.55)
+                left_hip, right_hip = point(23, 0.55), point(24, 0.55)
+                torso_points = [left_shoulder, right_shoulder, left_hip, right_hip]
+                if all(torso_points):
+                    xs = [item[0] for item in torso_points]
+                    ys = [item[1] for item in torso_points]
+                    padding = max(10, int((max(xs) - min(xs)) * 0.15))
+                    features["torso"] = (
+                        max(0, min(xs) - padding), max(0, min(ys) - padding),
+                        min(width - max(0, min(xs) - padding), max(xs) - min(xs) + 2 * padding),
+                        min(height - max(0, min(ys) - padding), max(ys) - min(ys) + 2 * padding),
+                    )
+
+                for name, shoulder, elbow, wrist in (
+                    ("left arm", point(11), point(13), point(15)),
+                    ("right arm", point(12), point(14), point(16)),
+                ):
+                    points = [item for item in (shoulder, elbow, wrist) if item]
+                    if len(points) >= 2:
+                        features["arms"].append({"label": name, "points": points})
+
+            if hand_result.multi_hand_landmarks:
+                for landmarks in hand_result.multi_hand_landmarks:
+                    xs = [int(item.x * width) for item in landmarks.landmark]
+                    ys = [int(item.y * height) for item in landmarks.landmark]
+                    features["hands"].append((min(xs), min(ys),
+                                              max(xs) - min(xs), max(ys) - min(ys)))
+            self._human_features = features
+        except Exception as exc:
+            print(f"human landmark warning: {exc}")
+        return self._human_features
+
     @staticmethod
     def _box_from_face(face):
         """Normalize Haar (x,y,w,h) and YuNet face rows to x,y,w,h."""
@@ -1064,24 +1147,36 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return x + w / 2.0, y + h / 2.0
 
     def _choose_person_target(self, detections, faces):
-        """Lock one face-confirmed person and reject unverified person boxes.
+        """Lock one face/torso-confirmed person and reject unverified boxes.
 
         The IMX500 SSD model is useful for finding a broad human-shaped area,
         but items such as backpacks can occasionally receive its ``person``
-        label.  A face inside that area is required before Doggie calls it a
-        person or follows it.  Face-only detection remains usable so a close,
-        cropped face is never lost just because the full-body model misses.
+        label. A face or the pose model's four-anchor torso inside that area is
+        required before Doggie calls it a person or follows it. Face-only
+        detection remains usable so a close, cropped face is never lost just
+        because the full-body model misses.
         """
         people = [d for d in detections if d["label"] == "person"]
+        human_features = self._human_features
+        body_torso = (human_features.get("torso")
+                      if time.monotonic() - human_features.get("timestamp", 0.0) < 1.0
+                      else None)
         if not people:
-            if not faces:
-                return None
-            face = max((self._box_from_face(item) for item in faces),
-                       key=lambda box: box[2] * box[3])
-            # A face-only result can still be aimed at, but is visibly marked
-            # as such until the AI model finds the full person again.
-            return {"person": None, "head": face, "torso": None,
-                    "face": face, "aim": face}
+            if faces:
+                face = max((self._box_from_face(item) for item in faces),
+                           key=lambda box: box[2] * box[3])
+                # A face-only result can still be aimed at, but is visibly
+                # marked as such until the AI model finds the full person.
+                return {"person": None, "head": face, "torso": None,
+                        "face": face, "aim": face, "confidence": 1.0}
+            if body_torso:
+                # Shoulders plus hips are present even if SSD has momentarily
+                # missed the wider person box. This is an operational 90%
+                # confidence signal, not a calibrated biometric identity.
+                return {"person": body_torso, "head": None, "torso": body_torso,
+                        "face": None, "aim": body_torso,
+                        "confidence": self.TORSO_PERSON_CONFIDENCE}
+            return None
 
         confirmed = []
         for detection in people:
@@ -1089,12 +1184,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             matching_faces = [self._box_from_face(face) for face in faces
                               if self._face_is_inside(
                                   self._box_from_face(face), person_box)]
-            if matching_faces:
+            torso_matches = bool(body_torso and self._face_is_inside(body_torso, person_box))
+            if matching_faces or torso_matches:
                 # The camera stream reads this same fresh result list, so it
                 # can distinguish the model's tentative box from a verified
                 # person without performing a second inference.
                 detection["person_confirmed"] = True
-                confirmed.append((person_box, matching_faces))
+                detection["person_confidence"] = (
+                    1.0 if matching_faces else self.TORSO_PERSON_CONFIDENCE
+                )
+                confirmed.append((person_box, matching_faces, body_torso if torso_matches else None))
 
         if not confirmed:
             # Keep raw model boxes visible as *possible* people for diagnosis,
@@ -1110,16 +1209,19 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             # Prefer continuity over a newly entering, larger bystander.
             return -((cx - lx) ** 2 + (cy - ly) ** 2)
 
-        person, matching_faces = max(confirmed, key=rank)
+        person, matching_faces, confirmed_torso = max(confirmed, key=rank)
         face = max(matching_faces, key=lambda box: box[2] * box[3]) if matching_faces else None
         # Face lock is the compact, precise target. Only retain the broader
         # torso region after a face miss, where it helps reacquire the person.
         head, torso = self._person_regions(person, include_torso=face is None)
+        if confirmed_torso is not None:
+            torso = confirmed_torso
         self._person_lock_center = self._box_center(person)
         # Face lock needs no torso tracking. On a face miss, head then torso
         # provide a stable path back to the same person.
         return {"person": person, "head": head, "torso": torso,
-                "face": face, "aim": face or head or torso}
+                "face": face, "aim": face or head or torso,
+                "confidence": 1.0 if face else self.TORSO_PERSON_CONFIDENCE}
 
     def _choose_tracking_box(self, detections, faces):
         """Return the finest stable target appropriate for the requested mode."""
@@ -1167,6 +1269,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 faces = self.detect_faces(cv2, frame, gray)
                 self._latest_faces = [self._box_from_face(face) for face in faces]
                 self._latest_faces_at = time.monotonic()
+                self._detect_human_features(frame, cv2)
                 detections = self._get_ai_detections()
                 target = self._choose_tracking_box(detections, faces)
                 if self.ai_track_target == "person":
@@ -1333,6 +1436,30 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                                         (40, 220, 40) if not possible_person else
                                         (50, 150, 255), 1, cv2.LINE_AA)
+                        features = assistant._human_features
+                        if time.monotonic() - features.get("timestamp", 0.0) < 1.0:
+                            torso = features.get("torso")
+                            if torso:
+                                x, y, w, h = torso
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (255, 80, 210), 2)
+                                cv2.putText(frame, "human torso: 90% person",
+                                            (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                                            (255, 80, 210), 1, cv2.LINE_AA)
+                            for arm in features.get("arms", []):
+                                points = arm["points"]
+                                for start, end in zip(points, points[1:]):
+                                    cv2.line(frame, start, end, (80, 220, 255), 3)
+                                cv2.putText(frame, arm["label"], points[-1],
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                                            (80, 220, 255), 1, cv2.LINE_AA)
+                            for x, y, w, h in features.get("hands", []):
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (80, 255, 120), 2)
+                                cv2.putText(frame, "hand", (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                            (80, 255, 120), 1, cv2.LINE_AA)
                         # The face overlay is intentionally a second, nested
                         # box rather than a replacement for the AI person
                         # box.  It makes it clear that Doggie sees both the

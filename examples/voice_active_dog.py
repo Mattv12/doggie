@@ -321,7 +321,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.ai_track_target = "person"
         self._last_ai_detections = []
         self._human_features = {"hands": [], "arms": [], "torso": None,
-                                "timestamp": 0.0}
+                                "torso_kind": None, "timestamp": 0.0}
         self._human_pose = None
         self._hand_tracker = None
         self._last_human_feature_at = 0.0
@@ -1079,7 +1079,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             pose_result = self._human_pose.process(rgb)
             hand_result = self._hand_tracker.process(rgb)
             features = {"hands": [], "arms": [], "torso": None,
-                        "timestamp": now}
+                        "torso_kind": None, "timestamp": now}
 
             if pose_result.pose_landmarks:
                 landmarks = pose_result.pose_landmarks.landmark
@@ -1091,19 +1091,29 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     return int(landmark.x * width), int(landmark.y * height)
 
                 # MediaPipe Pose: shoulders 11/12, elbows 13/14, wrists 15/16,
-                # hips 23/24. Four stable torso anchors are strong evidence of
-                # a human shape and reject ordinary bags and boxes.
-                left_shoulder, right_shoulder = point(11, 0.55), point(12, 0.55)
-                left_hip, right_hip = point(23, 0.55), point(24, 0.55)
-                torso_points = [left_shoulder, right_shoulder, left_hip, right_hip]
-                if all(torso_points):
-                    xs = [item[0] for item in torso_points]
-                    ys = [item[1] for item in torso_points]
+                # hips 23/24. Hips disappear when the camera sees only an
+                # upper body, so recognize that as a torso too: two shoulders
+                # plus at least one elbow or hip is strong human-shape evidence
+                # inside the AI camera's person box.
+                left_shoulder, right_shoulder = point(11, 0.45), point(12, 0.45)
+                left_elbow, right_elbow = point(13), point(14)
+                left_hip, right_hip = point(23), point(24)
+                upper_body_points = [left_shoulder, right_shoulder]
+                upper_body_points += [item for item in
+                                      (left_elbow, right_elbow, left_hip, right_hip)
+                                      if item]
+                if (left_shoulder and right_shoulder
+                        and len(upper_body_points) >= 3):
+                    xs = [item[0] for item in upper_body_points]
+                    ys = [item[1] for item in upper_body_points]
                     padding = max(10, int((max(xs) - min(xs)) * 0.15))
                     features["torso"] = (
                         max(0, min(xs) - padding), max(0, min(ys) - padding),
                         min(width - max(0, min(xs) - padding), max(xs) - min(xs) + 2 * padding),
                         min(height - max(0, min(ys) - padding), max(ys) - min(ys) + 2 * padding),
+                    )
+                    features["torso_kind"] = (
+                        "full torso" if left_hip and right_hip else "upper torso"
                     )
 
                 for name, shoulder, elbow, wrist in (
@@ -1455,7 +1465,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                 x, y, w, h = torso
                                 cv2.rectangle(frame, (x, y), (x + w, y + h),
                                               (255, 80, 210), 2)
-                                cv2.putText(frame, "human torso: 90% person",
+                                torso_kind = features.get("torso_kind") or "human torso"
+                                cv2.putText(frame, f"{torso_kind}: 90% person",
                                             (x, max(16, y - 6)),
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.48,
                                             (255, 80, 210), 1, cv2.LINE_AA)

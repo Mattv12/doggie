@@ -537,7 +537,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # not sit visibly nose-down: -15 standing, -30 sitting.
                 rest_pitch = -15
                 sit_pitch = -30
-                sit_face_upward_pitch = 10
+                sit_person_upward_pitch = 10
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
@@ -549,10 +549,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                             else rest_pitch)
 
                 def upward_pitch_limit():
-                    """Allow a 10 degree look-up only for a seated face lock."""
+                    """Allow a seated, confirmed-person lock to search upward."""
                     if (self.action_flow.posture == Posetures.SIT
-                            and getattr(self, "_face_tracking_locked", False)):
-                        return sit_face_upward_pitch
+                            and getattr(self, "_person_tracking_locked", False)):
+                        return sit_person_upward_pitch
                     return 0
 
                 def set_safe_forward_head(_pitch=None):
@@ -569,8 +569,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                       immediately=True, speed=50):
                     # In PiDog coordinates positive target pitch is upward.
                     # Stand/lie have no extra upward range. Sitting can use
-                    # the 10-degree look-up window only after a real face
-                    # lock; torso, object, and lost-target tracking cannot.
+                    # the 10-degree look-up window after a confirmed person
+                    # lock to find or continue following that person's face.
                     downward_limit = -5 if getattr(
                         self, "_face_tracking_locked", False) else 0
                     safe_targets = [[target[0], 0,
@@ -1301,6 +1301,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     target_box = target
                 if target_box is None:
                     self._face_tracking_locked = False
+                    self._person_tracking_locked = False
                     # A short grace period makes one dropped frame invisible;
                     # after that, sweep until either the AI person/object box
                     # or the nested face box is detected again.
@@ -1309,8 +1310,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     time.sleep(0.05)
                     continue
                 x, y, w, h = target_box
-                face_locked = bool(self.ai_track_target == "person" and target
-                                   and target["face"] is not None)
+                person_locked = bool(self.ai_track_target == "person" and target)
+                face_locked = bool(person_locked and target["face"] is not None)
+                self._person_tracking_locked = person_locked
                 self._face_tracking_locked = face_locked
                 self._tracked_at = time.monotonic()
                 self._search_yaw = yaw
@@ -1323,8 +1325,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     yaw = max(-80, min(80, yaw))
                 if abs(ey) > 25:
                     pitch += max(-0.75, min(0.75, -ey * 0.015))
+                    upward_limit = (10 if person_locked
+                                    and self.action_flow.posture == Posetures.SIT
+                                    else 0)
                     pitch = max(-5 if face_locked else 0,
-                                min(5, pitch))
+                                min(upward_limit, pitch))
                 self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
                                    immediately=True, speed=42)
                 time.sleep(0.08)

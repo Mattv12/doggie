@@ -131,6 +131,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "stretch": ("stretch",),
         "nod": ("nod",),
         "head down": ("head down",),
+        "safe shutdown": ("prepare shutdown", "safe shutdown", "shut down doggie"),
         "fart": (
             "take a poop right here",
             "take a poop",
@@ -211,6 +212,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "stretch": "stretch",
         "nod": "nod",
         "head down": "head down",
+        "prepare shutdown": "safe shutdown",
         "status report": "status report",
     }
 
@@ -337,6 +339,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._wake_prefix_until = 0.0
         self._speech_active = False
         self._queued_follow_up = None
+        self._shutdown_status = {"state": "idle", "detail": ""}
         self.add_trigger(self.trigger_web_command)
         self.add_trigger(self.trigger_follow_up)
 
@@ -827,6 +830,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             "function": lambda flow: self.start_ai_tracking("object"),
             "poseture": Posetures.SIT,
         }
+        self.action_flow.OPERATIONS["safe shutdown"] = {
+            "function": lambda flow: self._safe_shutdown_posture(),
+        }
         orig_run = self.action_flow.run
         def guarded_run(action):
             if self.any_mode_on():
@@ -846,6 +852,51 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 self.stop_all_modes(keep=starters[action])
             orig_run(action)
         self.action_flow.run = guarded_run
+
+    def _safe_shutdown_posture(self) -> None:
+        """Lower rear legs first, then front legs, using the live controller.
+
+        PiDog's standard servos do not report measured joint position.  The
+        stage verification therefore confirms that the live controller drained
+        its motion queue and reached its commanded rear-leg target before the
+        front-leg stage begins.  A fresh ``Pidog`` instance is deliberately
+        avoided: its initialization pose would command all legs at once.
+        """
+        rear_speed = 22
+        front_speed = 22
+        lie = list(self.dog.actions_dict["lie"][0][0])
+        self._shutdown_status = {"state": "lowering_rear", "detail": ""}
+        try:
+            self.stop_all_modes()
+            self.dog.legs_stop()
+            # Leg order is front-left/right (0..3), then rear-left/right
+            # (4..7). Preserve the front legs while the rear settles.
+            current = list(self.dog.legs.servo_positions)
+            rear_target = current[:4] + lie[4:]
+            self.dog.legs_move([rear_target], immediately=True, speed=rear_speed)
+            self.dog.wait_legs_done()
+            reached_rear = all(
+                abs(actual - target) < 0.5
+                for actual, target in zip(self.dog.legs.servo_positions[4:], lie[4:])
+            )
+            if not reached_rear:
+                raise RuntimeError("rear-leg command did not reach its target")
+
+            self._shutdown_status = {"state": "lowering_front", "detail": "rear verified"}
+            self.dog.legs_move([lie], immediately=True, speed=front_speed)
+            self.dog.wait_legs_done()
+            reached_lie = all(
+                abs(actual - target) < 0.5
+                for actual, target in zip(self.dog.legs.servo_positions, lie)
+            )
+            if not reached_lie:
+                raise RuntimeError("front-leg command did not reach its target")
+            self.action_flow.posture = Posetures.LIE
+            self._shutdown_status = {"state": "ready", "detail": "rear then front lie complete"}
+            print("safe shutdown posture: rear verified, front lowered, ready")
+        except Exception as exc:
+            self._shutdown_status = {"state": "failed", "detail": str(exc)}
+            print(f"safe shutdown posture failed: {exc}")
 
     def start_balance(self):
         if self.balance_on:
@@ -1723,10 +1774,20 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             def _forbidden(self) -> None:
                 self._json(403, {"error": "Sign in required"})
 
+            def _shutdown_authorized(self) -> bool:
+                supplied = self.headers.get("X-Doggie-Control-Token", "")
+                return bool(supplied) and hmac.compare_digest(supplied, token)
+
             def do_GET(self) -> None:
                 path = urlparse(self.path).path
                 if path == "/health":
                     self._json(200, {"status": "ok"})
+                    return
+                if path == "/internal/safe-shutdown-status":
+                    if not self._shutdown_authorized():
+                        self._forbidden()
+                        return
+                    self._json(200, dict(module._shutdown_status))
                     return
                 if path == "/api/status":
                     if not self._session_valid():
@@ -1757,6 +1818,23 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     self._json(400, {"error": "Invalid request"})
                     return
                 raw = self.rfile.read(length)
+                if path == "/internal/safe-shutdown":
+                    if not self._shutdown_authorized():
+                        self._forbidden()
+                        return
+                    if module._shutdown_status.get("state") in {
+                        "queued", "lowering_rear", "lowering_front"
+                    }:
+                        self._json(409, dict(module._shutdown_status))
+                        return
+                    try:
+                        module._web_commands.put_nowait("safe shutdown")
+                    except queue.Full:
+                        self._json(429, {"error": "Command queue is full"})
+                        return
+                    module._shutdown_status = {"state": "queued", "detail": "waiting for live controller"}
+                    self._json(202, dict(module._shutdown_status))
+                    return
                 if path == "/login":
                     form = parse_qs(raw.decode("utf-8", errors="replace"))
                     supplied = (form.get("token") or [""])[0]

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Route Doggie voice through a paired Bluetooth headset without changing
+# any PiDog movement behavior.  Run as root; it controls matt's PulseAudio
+# session using its authentication cookie.
+set -euo pipefail
+
+readonly AUDIO_USER="${DOGGIE_AUDIO_USER:-matt}"
+readonly AUDIO_UID="$(id -u "$AUDIO_USER")"
+readonly PULSE_RUNTIME="/run/user/${AUDIO_UID}"
+readonly PULSE_COOKIE="/home/${AUDIO_USER}/.config/pulse/cookie"
+readonly MIRROR_SINK="doggie_mirror"
+
+export XDG_RUNTIME_DIR="$PULSE_RUNTIME"
+export PULSE_SERVER="unix:${PULSE_RUNTIME}/pulse/native"
+export PULSE_COOKIE
+
+pactl_cmd() {
+  pactl "$@"
+}
+
+require_pulse() {
+  [[ -S "${PULSE_RUNTIME}/pulse/native" ]] || {
+    echo "PulseAudio socket is unavailable for ${AUDIO_USER}." >&2
+    exit 1
+  }
+  [[ -r "$PULSE_COOKIE" ]] || {
+    echo "PulseAudio cookie is unavailable at ${PULSE_COOKIE}." >&2
+    exit 1
+  }
+  pactl_cmd info >/dev/null
+}
+
+normalized_mac() {
+  tr ':' '_' <<<"$1" | tr '[:lower:]' '[:upper:]'
+}
+
+headset_card() {
+  local mac="$1" key
+  key="bluez_card.$(normalized_mac "$mac")"
+  pactl_cmd list short cards | awk -v key="$key" '$2 == key { print $2; exit }'
+}
+
+sink_for_card() {
+  local card="$1"
+  pactl_cmd list short sinks | awk -v output_prefix="${card/bluez_card/bluez_output}" \
+    -v sink_prefix="${card/bluez_card/bluez_sink}" \
+    '$2 ~ "^" output_prefix || $2 ~ "^" sink_prefix { print $2; exit }'
+}
+
+source_for_card() {
+  local card="$1"
+  pactl_cmd list short sources | awk -v input_prefix="${card/bluez_card/bluez_input}" \
+    -v source_prefix="${card/bluez_card/bluez_source}" \
+    '$2 ~ "^" input_prefix || $2 ~ "^" source_prefix { print $2; exit }'
+}
+
+remove_mirror() {
+  pactl_cmd list short modules | awk '$2 == "module-combine-sink" && $0 ~ /sink_name=doggie_mirror/ { print $1 }' |
+    while read -r id; do pactl_cmd unload-module "$id"; done
+}
+
+enable() {
+  local mac="${1:?Bluetooth MAC address is required}"
+  local card body_sink bt_sink bt_source profile
+  require_pulse
+
+  bluetoothctl connect "$mac" >/dev/null || true
+  sleep 2
+  card="$(headset_card "$mac")"
+  [[ -n "$card" ]] || {
+    echo "No PulseAudio card found for $mac. Pair and connect the headset first." >&2
+    exit 1
+  }
+
+  # A headset microphone requires an HFP/HSP profile. Prefer wideband mSBC.
+  # PulseAudio's native BlueZ module calls this profile
+  # "handsfree_head_unit"; PipeWire/PulseAudio variants use either of the
+  # hyphenated names below.
+  for profile in handsfree_head_unit headset-head-unit-msbc headset-head-unit; do
+    if pactl_cmd set-card-profile "$card" "$profile" 2>/dev/null; then break; fi
+  done
+  sleep 1
+  bt_sink="$(sink_for_card "$card")"
+  bt_source="$(source_for_card "$card")"
+  [[ -n "$bt_sink" && -n "$bt_source" ]] || {
+    echo "The headset connected, but did not expose both a speaker and microphone." >&2
+    exit 1
+  }
+
+  # Choosing the ALSA sink explicitly avoids the Bluetooth profile switch
+  # temporarily becoming PulseAudio's default sink.
+  body_sink="$(pactl_cmd list short sinks | awk '$2 ~ /^alsa_output\./ { print $2; exit }')"
+  [[ -n "$body_sink" ]] || { echo "Body speaker sink was not found." >&2; exit 1; }
+
+  remove_mirror
+  pactl_cmd load-module module-combine-sink sink_name="$MIRROR_SINK" \
+    slaves="${body_sink},${bt_sink}" adjust_time=0 >/dev/null
+  pactl_cmd set-default-sink "$MIRROR_SINK"
+  pactl_cmd set-default-source "$bt_source"
+  echo "Headset enabled: mic=${bt_source}; speech=${body_sink} + ${bt_sink}"
+}
+
+status() {
+  require_pulse
+  pactl_cmd info | grep -E '^Default (Sink|Source):'
+  pactl_cmd list short cards | grep bluez_card || true
+}
+
+disable() {
+  require_pulse
+  local body_sink usb_source
+  remove_mirror
+  body_sink="$(pactl_cmd list short sinks | awk '$2 ~ /^alsa_output\./ { print $2; exit }')"
+  usb_source="$(pactl_cmd list short sources | awk '$2 ~ /^alsa_input\.usb-/ { print $2; exit }')"
+  [[ -n "$body_sink" ]] && pactl_cmd set-default-sink "$body_sink"
+  [[ -n "$usb_source" ]] && pactl_cmd set-default-source "$usb_source"
+  echo "Headset routing disabled; restored body speaker and USB microphone."
+}
+
+case "${1:-status}" in
+  enable) enable "${2:-}" ;;
+  disable) disable ;;
+  status) status ;;
+  *) echo "Usage: $0 {enable BLUETOOTH_MAC|disable|status}" >&2; exit 2 ;;
+esac

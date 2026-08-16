@@ -1013,8 +1013,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return x + w / 2.0, y + h / 2.0
 
     def _choose_person_target(self, detections, faces):
-        """Lock one person, associate its face, and retain torso fallback."""
-        people = [d["box"] for d in detections if d["label"] == "person"]
+        """Lock one face-confirmed person and reject unverified person boxes.
+
+        The IMX500 SSD model is useful for finding a broad human-shaped area,
+        but items such as backpacks can occasionally receive its ``person``
+        label.  A face inside that area is required before Doggie calls it a
+        person or follows it.  Face-only detection remains usable so a close,
+        cropped face is never lost just because the full-body model misses.
+        """
+        people = [d for d in detections if d["label"] == "person"]
         if not people:
             if not faces:
                 return None
@@ -1025,7 +1032,26 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return {"person": None, "head": face, "torso": None,
                     "face": face, "aim": face}
 
-        def rank(person):
+        confirmed = []
+        for detection in people:
+            person_box = detection["box"]
+            matching_faces = [self._box_from_face(face) for face in faces
+                              if self._face_is_inside(
+                                  self._box_from_face(face), person_box)]
+            if matching_faces:
+                # The camera stream reads this same fresh result list, so it
+                # can distinguish the model's tentative box from a verified
+                # person without performing a second inference.
+                detection["person_confirmed"] = True
+                confirmed.append((person_box, matching_faces))
+
+        if not confirmed:
+            # Keep raw model boxes visible as *possible* people for diagnosis,
+            # but never follow one until the face detector corroborates it.
+            return None
+
+        def rank(item):
+            person = item[0]
             if self._person_lock_center is None:
                 return person[2] * person[3]
             cx, cy = self._box_center(person)
@@ -1033,9 +1059,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             # Prefer continuity over a newly entering, larger bystander.
             return -((cx - lx) ** 2 + (cy - ly) ** 2)
 
-        person = max(people, key=rank)
-        matching_faces = [self._box_from_face(face) for face in faces
-                          if self._face_is_inside(self._box_from_face(face), person)]
+        person, matching_faces = max(confirmed, key=rank)
         face = max(matching_faces, key=lambda box: box[2] * box[3]) if matching_faces else None
         # Face lock is the compact, precise target. Only retain the broader
         # torso region after a face miss, where it helps reacquire the person.
@@ -1243,12 +1267,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         # only draws its latest results on the local stream.
                         for detection in assistant._last_ai_detections:
                             x, y, w, h = detection["box"]
-                            label = f'{detection["label"]} {detection["score"]:.0%}'
+                            confirmed_person = (detection["label"] == "person"
+                                                and detection.get("person_confirmed", False))
+                            possible_person = (detection["label"] == "person"
+                                               and not confirmed_person)
+                            label_name = ("person" if confirmed_person else
+                                          "possible person" if possible_person else
+                                          detection["label"])
+                            label = f'{label_name} {detection["score"]:.0%}'
                             cv2.rectangle(frame, (x, y), (x + w, y + h),
-                                          (40, 220, 40), 2)
+                                          (40, 220, 40) if not possible_person else
+                                          (50, 150, 255), 2)
                             cv2.putText(frame, label, (x, max(16, y - 6)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                                        (40, 220, 40), 1, cv2.LINE_AA)
+                                        (40, 220, 40) if not possible_person else
+                                        (50, 150, 255), 1, cv2.LINE_AA)
                         # The face overlay is intentionally a second, nested
                         # box rather than a replacement for the AI person
                         # box.  It makes it clear that Doggie sees both the

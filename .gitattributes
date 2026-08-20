@@ -1,0 +1,5 @@
+# These files run directly on Raspberry Pi OS.  Keep their Unix line endings
+# even when the repository is edited from Windows; Bash treats CRLF as part of
+# commands and fails before Doggie's boot service can start.
+*.sh text eol=lf
+*.service text eol=lf

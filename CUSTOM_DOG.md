@@ -50,6 +50,11 @@ chmod +x scripts/doggie_reboot.sh
 chmod +x scripts/doggie_git_check.sh
 ```
 
+The GPT voice service must be installed from the current
+`examples/deploy/pidog-gpt.service`. It now starts only after `doggie-boot`
+has finished, which prevents both services from initializing the PiDog
+controller at once during a cold boot.
+
 For GPT voice mode secrets, use a root-owned environment file instead of
 `secret.py`:
 
@@ -168,6 +173,46 @@ sudo journalctl -b -1 -n 120 --no-pager
 dmesg -T | tail -n 80
 vcgencmd get_throttled
 ```
+
+If the Pi cannot be reached at all, connect a monitor/keyboard and run this
+local recovery check before changing Wi-Fi credentials:
+
+```bash
+nmcli device status
+nmcli connection show
+sudo rfkill unblock wifi
+sudo nmcli device set wlan0 managed yes
+sudo nmcli device connect wlan0
+```
+
+`bin/pidog_app_install.sh` deliberately configures `wlan0` as the `pidog`
+hotspot (and disables its normal Wi-Fi client). Do not run it on this setup;
+if it was run, restore the normal Wi-Fi configuration before expecting the Pi
+to join a home network.
+
+## Temporary Head Safety Lock
+
+When hardware behind the head needs protection, set this in the
+`pidog-gpt.service` unit and restart the service:
+
+```ini
+Environment=DOGGIE_HEAD_MOTION_ENABLED=0
+```
+
+This blocks all head servo commands, including automatic animations and preset
+actions. While locked, Doggie holds its head level when sitting and about five
+degrees down when standing or lying. Set it back to `1` only after the physical
+clearance issue is fixed.
+
+## Local Face and Guard Retention
+
+Doggie keeps all camera, face, and guard data on the Pi. Owner enrollment
+samples in `/home/matt/.pidog_faces/owner` remain until you explicitly remove
+them. Guard snapshots and non-owner face crops are kept locally for 60 days,
+then removed automatically while guard mode is running. They are stored in:
+
+- `/home/matt/pidog/guard_photos`
+- `/home/matt/.pidog_faces/visitors`
 
 ## Companion Mode
 

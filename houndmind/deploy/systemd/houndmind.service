@@ -1,0 +1,19 @@
+[Unit]
+Description=HoundMind PiDog runtime
+After=sound.target network.target
+Conflicts=pidog-gpt.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/matt/houndmind
+Environment=HOME=/root
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/doggie/houndmind.env
+ExecStart=/home/matt/houndmind/.venv/bin/python -m houndmind_ai --config ${HOUNDMIND_CONFIG}
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

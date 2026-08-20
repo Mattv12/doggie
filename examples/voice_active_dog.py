@@ -5,6 +5,7 @@ from pidog.dual_touch import TouchStyle
 from pidog.action_flow import ActionFlow, ActionStatus, Posetures
 from dog_abilities import AbilitiesMixin
 from memory_store import DoggieMemory
+from owner_voice import OwnerVoice
 
 import time
 import threading
@@ -12,6 +13,7 @@ import random
 import json
 import re
 import subprocess
+import socket
 import os
 import hmac
 import html
@@ -70,7 +72,7 @@ You have a physical body with the following features:
 - Powered by a 7.4V 18650 battery pack with 2000mAh capacity
 
 ## Actions You Can Perform:
-["forward", "backward", "lie", "stand", "sit", "bark", "bark harder", "pant", "howling", "wag tail", "stretch", "push up", "scratch", "handshake", "high five", "lick hand", "shake head", "relax neck", "nod", "think", "recall", "head down", "fluster", "surprise"]
+["forward", "backward", "lie", "stand", "sit", "bark", "bark harder", "pant", "howling", "wag tail", "push up", "scratch", "handshake", "high five", "lick hand", "shake head", "relax neck", "nod", "think", "recall", "head down", "fluster", "surprise"]
 
 ## User Input
 
@@ -100,23 +102,40 @@ Answer length: appropriately detailed
 class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     CAMERA_BRIGHTEN_TARGET = 138
     CAMERA_BRIGHTEN_MAX_GAIN = 6.0
+    # The Robot HAT capture path is already at its 25 dB hardware maximum.
+    # This modest software boost improves normal-distance speech recognition.
+    MIC_DIGITAL_GAIN = 1.45
+    # Run the CPU pose/hand landmark models at a modest cadence. The IMX500
+    # still performs the main object detection on-camera every frame.
+    HUMAN_FEATURE_INTERVAL_S = 0.80
+    TORSO_PERSON_CONFIDENCE = 0.90
+    COMMAND_LISTEN_SILENCE = 1.35
+    COMMAND_LISTEN_MAX_SECONDS = 8.0
+    # This is a one-shot conversational window, not an indefinite listen.
+    # Four seconds gives a person time to begin a natural reply after TTS.
+    FOLLOW_UP_LISTEN_SECONDS = 4.0
     DIRECT_ACTION_PATTERNS = {
         # These are intentionally local, stationary actions.  They remain
         # available when the cloud model cannot be reached, but walking and
         # turning always require the online decision path and supervision.
         "stop": ("stop", "stop it", "be still", "freeze"),
-        "sit": ("sit", "sit down"),
+        "sit": ("sit", "sit down", "sit up"),
         "stand": ("stand", "stand up"),
         "lie": ("lie down", "lay down", "lie"),
+        "learn my face": ("learn my face",),
+        "learn my voice": ("learn my voice", "learn my voice print"),
+        "track person": ("track person", "follow the person", "follow me"),
+        "track object": ("track object", "track objects", "follow an object"),
         "bark harder": ("bark harder",),
         "bark": ("bark",),
         "pant": ("pant",),
         "howling": ("howl", "howling"),
         "wag tail": ("wag tail", "wag your tail"),
         "shake head": ("shake head", "shake your head"),
-        "stretch": ("stretch",),
+        # Disabled after a reported hardware stall during the stretch pose.
         "nod": ("nod",),
         "head down": ("head down",),
+        "safe shutdown": ("prepare shutdown", "safe shutdown", "shut down doggie"),
         "fart": (
             "take a poop right here",
             "take a poop",
@@ -127,7 +146,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     VOICE_ACTIONS = ["bark", "bark harder", "pant",  "howling"]
     WAKE_SYNONYMS = {
-        "doggie": {"doggie", "doggy", "dog", "dougie", "duggy"},
+        # Vosk's small local model has repeatedly heard Doggie as these
+        # near-sounding words in the garage.  They are accepted only as part
+        # of the wake phrase (or as the one-word name fallback below).
+        "doggie": {"doggie", "doggy", "dog", "dougie", "duggy",
+                   "dodgy", "dummy", "derby", "doug", "jodie", "jody",
+                   "daddy", "doge", "dawg", "doogie", "dougy", "dodge",
+                   "dodgey", "doggiee"},
         "hey": {"hey", "hi", "hello", "okay", "ok", "yo", "hay"},
     }
     VISUAL_QUERY_PATTERNS = (
@@ -188,9 +213,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "howl": "howl",
         "wag tail": "wag tail",
         "shake head": "shake head",
-        "stretch": "stretch",
+        # Disabled until the pose is validated with a timeout/recovery guard.
         "nod": "nod",
         "head down": "head down",
+        "prepare shutdown": "safe shutdown",
         "status report": "status report",
     }
 
@@ -229,8 +255,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 return
             try:
                 from picamera2 import Picamera2
-                cam = Picamera2()
-                cam.configure(cam.create_preview_configuration(main={"size": (640, 480)}))
+                from picamera2.devices import IMX500
+                model_path = ("/usr/share/imx500-models/"
+                              "imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk")
+                # Must precede Picamera2 construction: it loads the neural
+                # network into the AI Camera's on-sensor accelerator.
+                ai_camera = IMX500(model_path)
+                intrinsics = ai_camera.network_intrinsics
+                if intrinsics is None or intrinsics.task != "object detection":
+                    raise RuntimeError("AI Camera model is not object detection")
+                intrinsics.update_with_defaults()
+                cam = Picamera2(ai_camera.camera_num)
+                cam.configure(cam.create_preview_configuration(
+                    main={"size": (640, 480)}, buffer_count=8,
+                    controls={"FrameRate": intrinsics.inference_rate}))
+                ai_camera.show_network_fw_progress_bar()
                 cam.start()
                 # garage is dim: default AE tops out at 33ms exposure (30fps
                 # timing) and frames came out very dark. Give AE more room,
@@ -242,8 +281,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     "FrameDurationLimits": (33333, 100000),
                 })
                 _pre["cam"] = cam
+                _pre["ai_camera"] = ai_camera
+                _pre["ai_labels"] = intrinsics.labels or []
             except Exception as e:
-                _errs.append(e)
+                # Vision is optional. A missing camera must not prevent the
+                # speech-and-motion assistant from starting.
+                print(f"camera unavailable; starting without vision: {e}")
 
         _t0 = time.time()
         _threads = [threading.Thread(target=f, daemon=True)
@@ -260,6 +303,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         _va.STT = lambda language=None, **kw: _pre["stt"]
         if "cam" in _pre:
             self.init_camera = lambda: setattr(self, "picam2", _pre["cam"])
+        else:
+            # Do not let the base class retry an unavailable camera.
+            kwargs["with_image"] = False
         try:
             super().__init__(*args, **kwargs)
         finally:
@@ -270,11 +316,52 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._last_user_text = ""
         self._last_visual_query = False
         self._last_identity_query = False
+        self.ai_camera = _pre.get("ai_camera")
+        self.ai_labels = _pre.get("ai_labels", [])
+        self.ai_track_target = "person"
+        self._last_ai_detections = []
+        self._human_features = {"hands": [], "arms": [], "torso": None,
+                                "torso_kind": None, "timestamp": 0.0}
+        self._human_pose = None
+        self._hand_tracker = None
+        self._last_human_feature_at = 0.0
+        # Tracking state is deliberately separate from detection state. A
+        # detector can miss a frame when somebody turns or the exposure
+        # changes; a brief grace period avoids jitter, then a head-only scan
+        # reacquires the target without following stale AI-camera results.
+        self._tracked_at = 0.0
+        self._search_yaw = 0.0
+        self._search_direction = 1.0
+        self._last_search_at = 0.0
+        self._latest_faces = []
+        self._latest_faces_at = 0.0
+        self._latest_person_target = None
+        self._person_lock_center = None
+        self._watch_failure_times = []
+        self._last_stt_audio = b""
+        self._last_stt_sample_rate = 16000
+        self.voice_identity = OwnerVoice()
         self._web_commands = queue.Queue(maxsize=10)
         self._web_server = None
         self._web_server_thread = None
         self._web_sessions = {}
+        self._wake_prefix_until = 0.0
+        self._speech_active = False
+        self._queued_follow_up = None
+        self._shutdown_status = {"state": "idle", "detail": ""}
         self.add_trigger(self.trigger_web_command)
+        self.add_trigger(self.trigger_follow_up)
+
+        # Keep visual/head motion quiet while TTS is speaking. This wrapper
+        # also covers messages spoken by individual abilities.
+        original_tts_say = self.tts.say
+        def quiet_tts_say(*args, **kwargs):
+            self._speech_active = True
+            try:
+                return original_tts_say(*args, **kwargs)
+            finally:
+                self._speech_active = False
+        self.tts.say = quiet_tts_say
 
         # Wake word fix: the library requires the transcription to EXACTLY
         # equal a wake word, so any background noise or extra words defeats
@@ -287,7 +374,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 return False
             self._remember_sound_direction()
             hit = self._is_wake_phrase(result, stt_self.wake_words)
+            # The local recognizer sometimes finalizes "hey" before it hears
+            # the name. Keep a brief prefix window so its next audio chunk can
+            # complete the phrase instead of making Matt repeat it.
+            if self._is_wake_prefix(result):
+                self._wake_prefix_until = _time.monotonic() + 5.0
+            elif (_time.monotonic() < self._wake_prefix_until
+                  and self._normalize_phrase(result).split() == ["doggie"]):
+                hit = True
             if hit:
+                self._wake_prefix_until = 0.0
                 self.memory.note_wake_phrase(result)
             print(f"heard: {result}" + ("  [WAKE]" if hit else ""))
             return hit
@@ -297,15 +393,35 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # endpointer, which is slow and never fires while background noise
         # keeps "speech" going. Instead, finalize once the partial
         # transcription stops changing, with a hard cap as a backstop.
+        import audioop as _audioop
         import json as _json
         import queue as _queue
         import time as _time
         import sounddevice as _sd
 
+        def _remember_audio(chunks, sample_rate):
+            self._last_stt_audio = b"".join(chunks)
+            self._last_stt_sample_rate = int(sample_rate or self.stt._samplerate)
+
+        def _amplified_callback(callback):
+            def amplified(indata, frames, time_info, status):
+                try:
+                    indata = _audioop.mul(bytes(indata), 2, self.MIC_DIGITAL_GAIN)
+                except Exception as exc:
+                    print(f"microphone gain warning: {exc}")
+                callback(indata, frames, time_info, status)
+            return amplified
+
         def _snappy_listen_streaming(stt_self, q, device=None, samplerate=None, callback=None,
                                      stable_silence=0.7, max_utterance=6.0):
+            stable_silence = getattr(self, "_listen_silence",
+                                     self.COMMAND_LISTEN_SILENCE)
+            max_utterance = getattr(self, "_listen_max_seconds",
+                                    self.COMMAND_LISTEN_MAX_SECONDS)
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
-                                    dtype="int16", channels=1, callback=callback):
+                                    dtype="int16", channels=1,
+                                    callback=_amplified_callback(callback)):
+                audio_chunks = []
                 last_partial = ""
                 last_change = None
                 start = _time.time()
@@ -316,16 +432,19 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if ((last_change is not None and now - last_change > stable_silence)
                             or (now - start > max_utterance)):
                         text = _json.loads(stt_self.recognizer.FinalResult()).get("text", "").strip()
+                        _remember_audio(audio_chunks, samplerate)
                         yield {"done": True, "partial": "", "final": text}
                         return
                     try:
                         data = q.get(timeout=0.2)
                     except _queue.Empty:
                         continue
+                    audio_chunks.append(data)
                     if stt_self.recognizer.AcceptWaveform(data):
                         text = _json.loads(stt_self.recognizer.Result()).get("text", "")
                         if text == "":
                             continue
+                        _remember_audio(audio_chunks, samplerate)
                         yield {"done": True, "partial": "", "final": text.strip()}
                         return
                     partial = _json.loads(stt_self.recognizer.PartialResult()).get("partial", "")
@@ -338,7 +457,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         def _snappy_listen_non_streaming(stt_self, q, device=None, samplerate=None, callback=None,
                                          stable_silence=0.6, max_listen=4.0):
             with _sd.RawInputStream(samplerate=samplerate, blocksize=1024, device=device,
-                                    dtype="int16", channels=1, callback=callback):
+                                dtype="int16", channels=1,
+                                callback=_amplified_callback(callback)):
+                audio_chunks = []
                 last_partial = ""
                 last_change = None
                 start = _time.time()
@@ -346,23 +467,39 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     if stt_self.stop_listening_event.is_set():
                         return None
                     now = _time.time()
-                    if ((last_change is not None and now - last_change > stable_silence)
+                    # Do not cut off immediately after a standalone wake
+                    # prefix. Vosk often emits "hey" first and needs another
+                    # fraction of a second to add "doggie" to the result.
+                    prefix_grace = (1.15 if self._is_wake_prefix(last_partial)
+                                    else stable_silence)
+                    if ((last_change is not None and now - last_change > prefix_grace)
                             or (now - start > max_listen)):
                         text = _json.loads(stt_self.recognizer.FinalResult()).get("text", "").strip()
+                        _remember_audio(audio_chunks, samplerate)
                         return text if text else None
                     try:
                         data = q.get(timeout=0.2)
                     except _queue.Empty:
                         continue
+                    audio_chunks.append(data)
                     if stt_self.recognizer.AcceptWaveform(data):
                         text = _json.loads(stt_self.recognizer.Result()).get("text", "")
                         if text == "":
                             continue
+                        _remember_audio(audio_chunks, samplerate)
                         return text.strip()
                     partial = _json.loads(stt_self.recognizer.PartialResult()).get("partial", "")
                     if partial and not partial.isspace() and partial != last_partial:
                         last_partial = partial
                         last_change = _time.time()
+                        # The wake listener used to wait for Vosk's endpoint
+                        # even after it had already recognized "hey doggie".
+                        # Return the partial immediately, then reset so the
+                        # following command starts with a clean recognizer.
+                        if self._is_wake_phrase(partial, stt_self.wake_words):
+                            _remember_audio(audio_chunks, samplerate)
+                            stt_self.recognizer.Reset()
+                            return partial
 
         self.stt._listen_streaming = types.MethodType(_snappy_listen_streaming, self.stt)
         self.stt._listen_non_streaming = types.MethodType(_snappy_listen_non_streaming, self.stt)
@@ -377,14 +514,106 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # face-watch mode
         self.watch_on = False
         self.watch_thread = None
+        self.auto_tracking = True
         self._setup_balance()
         self._start_camera_stream()
         self._setup_abilities()
+        # Default to local face tracking now that the head limiter permits
+        # yaw only. Guard mode still takes exclusive control as needed.
+        self.start_watch()
 
     def init_pidog(self):
         try:
             self.dog = Pidog()
-            self.action_flow = ActionFlow(self.dog)
+            if os.environ.get("DOGGIE_HEAD_MOTION_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                # The camera-board power connector limits rear/up travel. Keep
+                # yaw tracking. Extra upward pitch is allowed only while
+                # sitting with a confirmed face lock; standing and lying
+                # remain at their known-safe forward pitch.
+                original_head_move = self.dog.head_move
+                original_head_move_raw = self.dog.head_move_raw
+                # Sitting changes the body/head geometry. Shift both known
+                # safe neutral positions. Stand and lay can safely rest an
+                # additional 5 degrees back/up: -10 standing/lying, -30 sitting.
+                rest_pitch = -10
+                sit_pitch = -30
+                sit_person_upward_pitch = 10
+                sit_face_upward_pitch = 15
+                self.dog.head_stop()
+
+                self.action_flow = ActionFlow(self.dog)
+                self.action_flow.SIT_HEAD_PITCH = sit_pitch
+                self.action_flow.STAND_HEAD_PITCH = rest_pitch
+
+                def current_safe_pitch():
+                    return (sit_pitch if self.action_flow.posture == Posetures.SIT
+                            else rest_pitch)
+
+                def upward_pitch_limit():
+                    """Let a seated person search become slightly higher on face lock."""
+                    if (self.action_flow.posture == Posetures.SIT
+                            and getattr(self, "_face_tracking_locked", False)):
+                        return sit_face_upward_pitch
+                    if (self.action_flow.posture == Posetures.SIT
+                            and getattr(self, "_person_tracking_locked", False)):
+                        return sit_person_upward_pitch
+                    return 0
+
+                def set_safe_forward_head(_pitch=None):
+                    safe_pitch = current_safe_pitch()
+                    self.action_flow.head_pitch_init = safe_pitch
+                    original_head_move([[0, 0, 0]],
+                                       pitch_comp=safe_pitch,
+                                       immediately=True, speed=30)
+
+                self.action_flow.set_head_pitch_init = set_safe_forward_head
+                set_safe_forward_head()
+
+                def limited_head_move(target_yrps, roll_comp=0, pitch_comp=0,
+                                      immediately=True, speed=50):
+                    # In PiDog coordinates positive target pitch is upward.
+                    # Stand/lie have no extra upward range. Sitting can use
+                    # the 10-degree look-up window after a confirmed person
+                    # lock to find or continue following that person's face.
+                    downward_limit = -5 if getattr(
+                        self, "_face_tracking_locked", False) else 0
+                    safe_targets = [[target[0], 0,
+                                     max(downward_limit,
+                                         min(upward_pitch_limit(), target[2]))]
+                                    for target in target_yrps]
+                    original_head_move(safe_targets,
+                                       pitch_comp=current_safe_pitch(),
+                                       immediately=immediately, speed=speed)
+
+                def limited_head_move_raw(target_angles, immediately=True,
+                                          speed=50):
+                    safe_pitch = current_safe_pitch()
+                    safe_targets = [[target[0], 0,
+                                     max(safe_pitch, min(safe_pitch + upward_pitch_limit(),
+                                                         target[2]))]
+                                    for target in target_angles]
+                    original_head_move_raw(safe_targets, immediately=immediately,
+                                          speed=speed)
+
+                self.dog.head_move = limited_head_move
+                self.dog.head_move_raw = limited_head_move_raw
+
+                # ActionFlow normally suppresses a consecutive identical
+                # action.  Always restore the known-safe passive pose after
+                # any requested posture so "sit up" reliably restores the
+                # safe forward pose even when Doggie was already sitting.
+                original_change_posture = self.action_flow.change_poseture
+
+                def change_posture_with_safe_head(posture):
+                    original_change_posture(posture)
+                    set_safe_forward_head()
+
+                self.action_flow.change_poseture = change_posture_with_safe_head
+                print("head safety limiter enabled: seated person search=10 degrees, "
+                      "seated face lock=15 degrees; stand/lie stay forward; "
+                      "rest=-10, sit=-30")
+            else:
+                self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
         except Exception as e:
             raise RuntimeError(e)
@@ -397,6 +626,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def after_listen(self, stt_result):
         self._cmd_listening = False
         super().after_listen(stt_result)
+
+    def trigger_follow_up(self):
+        """Feed a just-heard answer into the next assistant round."""
+        message = self._queued_follow_up
+        if not message:
+            return False, False, ""
+        self._queued_follow_up = None
+        print("follow-up: heard a reply")
+        return True, False, message
 
     def before_think(self, text):
         self.dog.rgb_strip.set_mode('listen', 'yellow', 1)
@@ -415,8 +653,29 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def on_wake(self):
         if len(self.answer_on_wake) > 0:
             self.dog.rgb_strip.set_mode('breath', 'pink', 1)
-        # perk up: snap toward the voice, sporadic glances for a few seconds
+        # Perk up gently—the microphone needs a quiet moment after wake-up.
         self.head_excite(6.0)
+
+    def _listen_for_follow_up(self):
+        """Briefly listen after Doggie explicitly asks the user a question."""
+        response = getattr(self, "_last_spoken_response", "").strip()
+        if not response.endswith("?"):
+            return
+        print("follow-up: listening for up to 4 seconds")
+        self._listen_silence = 0.75
+        self._listen_max_seconds = self.FOLLOW_UP_LISTEN_SECONDS
+        try:
+            reply = self.listen()
+        finally:
+            self._listen_silence = self.COMMAND_LISTEN_SILENCE
+            self._listen_max_seconds = self.COMMAND_LISTEN_MAX_SECONDS
+        if reply:
+            self._queued_follow_up = reply
+        else:
+            # The follow-up window timed out. Clear the cyan listening state
+            # before returning to normal wake-word monitoring.
+            self.dog.rgb_strip.close()
+            print("follow-up: no reply; returned to wake mode")
 
     def on_heard(self, text):
         self.action_flow.set_status(ActionStatus.THINK)
@@ -451,6 +710,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             and not re.match(r"^\s*actions?\s*:", line, flags=re.IGNORECASE)
         ]
         response_text = "\n".join(lines).strip()
+        self._last_spoken_response = response_text
         actions = self._filter_actions_for_context(actions)
         self.action_flow.add_action(*actions)
 
@@ -466,7 +726,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
     def after_say(self, text):
         self.action_flow.wait_actions_done()
-
+        self._resume_tracking_when_idle()
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
         self.dog.rgb_strip.close()
 
@@ -493,7 +753,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     # weighted pool of affection moves for petting; tail wag most common
     PETTING_ACTIONS = [
         ("wag tail", 4), ("nod", 2), ("pant", 2), ("lick hand", 2),
-        ("stretch", 1), ("twist body", 1), ("feet shake", 1),
+        ("twist body", 1), ("feet shake", 1),
         ("scratch", 1), ("relax neck", 1),
     ]
 
@@ -546,10 +806,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def on_finish_a_round(self):
         # wait actions done
         self.action_flow.wait_actions_done()
+        self._resume_tracking_when_idle()
         # back to sit
         # self.action_flow.change_poseture(Posetures.SIT)  # disabled so lie/stay-down can hold
         # close rgb strip
         self.dog.rgb_strip.close()
+        self._listen_for_follow_up()
 
 
     # -- IMU balance mode ---------------------------------------------------
@@ -561,7 +823,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     IDLE_ACTIONS = ('waiting', 'feet_left_right')
 
     MODE_ACTIONS = ("balance on", "balance off", "watch me", "stop watching",
-                    "guard on", "guard off", "fetch", "stop fetch")
+                    "track person", "track object", "guard on", "guard off")
 
     def _setup_balance(self):
         # instance-level copy so we don't mutate the class-level OPERATIONS
@@ -578,7 +840,18 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             "poseture": Posetures.SIT,
         }
         self.action_flow.OPERATIONS["stop watching"] = {
-            "function": lambda flow: self.stop_watch(),
+            "function": lambda flow: self.stop_watch(manual=True),
+        }
+        self.action_flow.OPERATIONS["track person"] = {
+            "function": lambda flow: self.start_ai_tracking("person"),
+            "poseture": Posetures.SIT,
+        }
+        self.action_flow.OPERATIONS["track object"] = {
+            "function": lambda flow: self.start_ai_tracking("object"),
+            "poseture": Posetures.SIT,
+        }
+        self.action_flow.OPERATIONS["safe shutdown"] = {
+            "function": lambda flow: self._safe_shutdown_posture(),
         }
         orig_run = self.action_flow.run
         def guarded_run(action):
@@ -593,11 +866,57 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         self.stop_all_modes()
             # modes are mutually exclusive; starting one stops the others
             starters = {"balance on": "balance", "watch me": "watch",
-                        "guard on": "guard", "fetch": "fetch"}
+            "track person": "watch", "track object": "watch",
+                        "guard on": "guard"}
             if action in starters:
                 self.stop_all_modes(keep=starters[action])
             orig_run(action)
         self.action_flow.run = guarded_run
+
+    def _safe_shutdown_posture(self) -> None:
+        """Lower rear legs first, then front legs, using the live controller.
+
+        PiDog's standard servos do not report measured joint position.  The
+        stage verification therefore confirms that the live controller drained
+        its motion queue and reached its commanded rear-leg target before the
+        front-leg stage begins.  A fresh ``Pidog`` instance is deliberately
+        avoided: its initialization pose would command all legs at once.
+        """
+        rear_speed = 22
+        front_speed = 22
+        lie = list(self.dog.actions_dict["lie"][0][0])
+        self._shutdown_status = {"state": "lowering_rear", "detail": ""}
+        try:
+            self.stop_all_modes()
+            self.dog.legs_stop()
+            # Leg order is front-left/right (0..3), then rear-left/right
+            # (4..7). Preserve the front legs while the rear settles.
+            current = list(self.dog.legs.servo_positions)
+            rear_target = current[:4] + lie[4:]
+            self.dog.legs_move([rear_target], immediately=True, speed=rear_speed)
+            self.dog.wait_legs_done()
+            reached_rear = all(
+                abs(actual - target) < 0.5
+                for actual, target in zip(self.dog.legs.servo_positions[4:], lie[4:])
+            )
+            if not reached_rear:
+                raise RuntimeError("rear-leg command did not reach its target")
+
+            self._shutdown_status = {"state": "lowering_front", "detail": "rear verified"}
+            self.dog.legs_move([lie], immediately=True, speed=front_speed)
+            self.dog.wait_legs_done()
+            reached_lie = all(
+                abs(actual - target) < 0.5
+                for actual, target in zip(self.dog.legs.servo_positions, lie)
+            )
+            if not reached_lie:
+                raise RuntimeError("front-leg command did not reach its target")
+            self.action_flow.posture = Posetures.LIE
+            self._shutdown_status = {"state": "ready", "detail": "rear then front lie complete"}
+            print("safe shutdown posture: rear verified, front lowered, ready")
+        except Exception as exc:
+            self._shutdown_status = {"state": "failed", "detail": str(exc)}
+            print(f"safe shutdown posture failed: {exc}")
 
     def start_balance(self):
         if self.balance_on:
@@ -666,6 +985,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     # Tracks the largest face using the voice assistant's own camera stream
     # (no second camera process). Gains and signs match 7_face_track.py.
     def start_watch(self):
+        self.auto_tracking = True
         if self.watch_on:
             return
         if getattr(self, "picam2", None) is None:
@@ -677,7 +997,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self.watch_thread.start()
         print("watch mode: ON")
 
-    def stop_watch(self):
+    def stop_watch(self, manual=False):
+        if manual:
+            self.auto_tracking = False
         if not self.watch_on:
             return
         self.watch_on = False
@@ -686,38 +1008,370 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             self.watch_thread = None
         print("watch mode: OFF")
 
+    def _resume_tracking_when_idle(self):
+        """Ordinary posture/actions must not permanently disable tracking."""
+        if (getattr(self, "auto_tracking", True)
+                and not self.watch_on
+                and not self.balance_on
+                and not getattr(self, "guard_on", False)):
+            self.start_watch()
+
+    def start_ai_tracking(self, target):
+        """Select an on-camera AI class without enabling unsafe walking."""
+        if self.ai_camera is None:
+            print("AI tracking unavailable: AI Camera model did not start")
+            return
+        self.ai_track_target = target
+        self.start_watch()
+        print(f"AI tracking: {target}")
+
+    def _get_ai_detections(self):
+        """Read IMX500 results produced on the camera, not a cloud service."""
+        if self.ai_camera is None:
+            return []
+        try:
+            metadata = self.picam2.capture_metadata()
+            outputs = self.ai_camera.get_outputs(metadata, add_batch=True)
+            if outputs is None:
+                # There is no fresh inference result yet.  Do not report old
+                # boxes as a live target: that prevents the search path below
+                # from reacquiring someone who has moved out of frame.
+                return []
+            boxes, scores, classes = outputs[0][0], outputs[1][0], outputs[2][0]
+            detections = []
+            for box, score, category in zip(boxes, scores, classes):
+                if float(score) < 0.50:
+                    continue
+                category = int(category)
+                label = (self.ai_labels[category] if category < len(self.ai_labels)
+                         else f"class {category}")
+                x, y, w, h = self.ai_camera.convert_inference_coords(
+                    box, metadata, self.picam2)
+                detections.append({"label": label.lower(), "score": float(score),
+                                   "box": (int(x), int(y), int(w), int(h))})
+            self._last_ai_detections = detections
+            return detections
+        except Exception as exc:
+            print(f"AI Camera inference warning: {exc}")
+            return self._last_ai_detections
+
+    def _detect_human_features(self, frame, cv2):
+        """Find torso, arm, and hand landmarks with lightweight local models."""
+        now = time.monotonic()
+        if now - self._last_human_feature_at < self.HUMAN_FEATURE_INTERVAL_S:
+            return self._human_features
+        self._last_human_feature_at = now
+        try:
+            import mediapipe as mp
+
+            if self._human_pose is None:
+                self._human_pose = mp.solutions.pose.Pose(
+                    static_image_mode=False, model_complexity=0,
+                    enable_segmentation=False, min_detection_confidence=0.55,
+                    min_tracking_confidence=0.55,
+                )
+                self._hand_tracker = mp.solutions.hands.Hands(
+                    static_image_mode=False, max_num_hands=2, model_complexity=0,
+                    min_detection_confidence=0.55, min_tracking_confidence=0.55,
+                )
+
+            height, width = frame.shape[:2]
+            # 320x240 is sufficient for landmarks and keeps this auxiliary
+            # CPU work from competing with the AI-camera detector.
+            small = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            pose_result = self._human_pose.process(rgb)
+            hand_result = self._hand_tracker.process(rgb)
+            features = {"hands": [], "arms": [], "torso": None,
+                        "torso_kind": None, "timestamp": now}
+
+            if pose_result.pose_landmarks:
+                landmarks = pose_result.pose_landmarks.landmark
+
+                def point(index, minimum=0.45):
+                    landmark = landmarks[index]
+                    if landmark.visibility < minimum:
+                        return None
+                    return int(landmark.x * width), int(landmark.y * height)
+
+                # MediaPipe Pose: shoulders 11/12, elbows 13/14, wrists 15/16,
+                # hips 23/24. Hips disappear when the camera sees only an
+                # upper body, so recognize that as a torso too: two shoulders
+                # plus at least one elbow or hip is strong human-shape evidence
+                # inside the AI camera's person box.
+                left_shoulder, right_shoulder = point(11, 0.45), point(12, 0.45)
+                left_elbow, right_elbow = point(13), point(14)
+                left_hip, right_hip = point(23), point(24)
+                upper_body_points = [left_shoulder, right_shoulder]
+                upper_body_points += [item for item in
+                                      (left_elbow, right_elbow, left_hip, right_hip)
+                                      if item]
+                if (left_shoulder and right_shoulder
+                        and len(upper_body_points) >= 3):
+                    xs = [item[0] for item in upper_body_points]
+                    ys = [item[1] for item in upper_body_points]
+                    padding = max(10, int((max(xs) - min(xs)) * 0.15))
+                    features["torso"] = (
+                        max(0, min(xs) - padding), max(0, min(ys) - padding),
+                        min(width - max(0, min(xs) - padding), max(xs) - min(xs) + 2 * padding),
+                        min(height - max(0, min(ys) - padding), max(ys) - min(ys) + 2 * padding),
+                    )
+                    features["torso_kind"] = (
+                        "full torso" if left_hip and right_hip else "upper torso"
+                    )
+
+                for name, shoulder, elbow, wrist in (
+                    ("left arm", point(11), point(13), point(15)),
+                    ("right arm", point(12), point(14), point(16)),
+                ):
+                    points = [item for item in (shoulder, elbow, wrist) if item]
+                    if len(points) >= 2:
+                        features["arms"].append({"label": name, "points": points})
+
+            if hand_result.multi_hand_landmarks:
+                for landmarks in hand_result.multi_hand_landmarks:
+                    xs = [int(item.x * width) for item in landmarks.landmark]
+                    ys = [int(item.y * height) for item in landmarks.landmark]
+                    features["hands"].append((min(xs), min(ys),
+                                              max(xs) - min(xs), max(ys) - min(ys)))
+            self._human_features = features
+        except Exception as exc:
+            print(f"human landmark warning: {exc}")
+        return self._human_features
+
+    @staticmethod
+    def _box_from_face(face):
+        """Normalize Haar (x,y,w,h) and YuNet face rows to x,y,w,h."""
+        return tuple(int(v) for v in face[:4])
+
+    @staticmethod
+    def _face_is_inside(face_box, person_box):
+        fx, fy, fw, fh = face_box
+        px, py, pw, ph = person_box
+        cx, cy = fx + fw / 2.0, fy + fh / 2.0
+        return px <= cx <= px + pw and py <= cy <= py + ph
+
+    @staticmethod
+    def _person_regions(person_box, include_torso=True):
+        """Derive a head region and, only when needed, a torso fallback."""
+        x, y, w, h = person_box
+        head = (x + int(w * 0.16), y, int(w * 0.68), int(h * 0.34))
+        torso = None
+        if include_torso:
+            torso = (x + int(w * 0.10), y + int(h * 0.28),
+                     int(w * 0.80), int(h * 0.42))
+        return head, torso
+
+    @staticmethod
+    def _box_center(box):
+        x, y, w, h = box
+        return x + w / 2.0, y + h / 2.0
+
+    def _choose_person_target(self, detections, faces):
+        """Lock one face/torso-confirmed person and reject unverified boxes.
+
+        The IMX500 SSD model is useful for finding a broad human-shaped area,
+        but items such as backpacks can occasionally receive its ``person``
+        label. A face or the pose model's four-anchor torso inside that area is
+        required before Doggie calls it a person or follows it. Face-only
+        detection remains usable so a close, cropped face is never lost just
+        because the full-body model misses.
+        """
+        people = [d for d in detections if d["label"] == "person"]
+        human_features = self._human_features
+        body_torso = (human_features.get("torso")
+                      if time.monotonic() - human_features.get("timestamp", 0.0) < 1.0
+                      else None)
+        if not people:
+            if faces:
+                face = max((self._box_from_face(item) for item in faces),
+                           key=lambda box: box[2] * box[3])
+                # A face-only result can still be aimed at, but is visibly
+                # marked as such until the AI model finds the full person.
+                return {"person": None, "head": face, "torso": None,
+                        "face": face, "aim": face, "confidence": 1.0}
+            if body_torso:
+                # Shoulders plus hips are present even if SSD has momentarily
+                # missed the wider person box. This is an operational 90%
+                # confidence signal, not a calibrated biometric identity.
+                return {"person": body_torso, "head": None, "torso": body_torso,
+                        "face": None, "aim": body_torso,
+                        "confidence": self.TORSO_PERSON_CONFIDENCE}
+            return None
+
+        confirmed = []
+        for detection in people:
+            person_box = detection["box"]
+            matching_faces = [self._box_from_face(face) for face in faces
+                              if self._face_is_inside(
+                                  self._box_from_face(face), person_box)]
+            torso_matches = bool(body_torso and self._face_is_inside(body_torso, person_box))
+            if matching_faces or torso_matches:
+                # The camera stream reads this same fresh result list, so it
+                # can distinguish the model's tentative box from a verified
+                # person without performing a second inference.
+                detection["person_confirmed"] = True
+                detection["person_confidence"] = (
+                    1.0 if matching_faces else self.TORSO_PERSON_CONFIDENCE
+                )
+                confirmed.append((person_box, matching_faces, body_torso if torso_matches else None))
+
+        if not confirmed:
+            # Keep raw model boxes visible as *possible* people for diagnosis,
+            # but never follow one until the face detector corroborates it.
+            return None
+
+        def rank(item):
+            person = item[0]
+            if self._person_lock_center is None:
+                return person[2] * person[3]
+            cx, cy = self._box_center(person)
+            lx, ly = self._person_lock_center
+            # Prefer continuity over a newly entering, larger bystander.
+            return -((cx - lx) ** 2 + (cy - ly) ** 2)
+
+        person, matching_faces, confirmed_torso = max(confirmed, key=rank)
+        face = max(matching_faces, key=lambda box: box[2] * box[3]) if matching_faces else None
+        # Face lock is the compact, precise target. Only retain the broader
+        # torso region after a face miss, where it helps reacquire the person.
+        head, torso = self._person_regions(person, include_torso=face is None)
+        if confirmed_torso is not None:
+            torso = confirmed_torso
+        self._person_lock_center = self._box_center(person)
+        # Face lock needs no torso tracking. On a face miss, head then torso
+        # provide a stable path back to the same person.
+        return {"person": person, "head": head, "torso": torso,
+                "face": face, "aim": face or head or torso,
+                "confidence": 1.0 if face else self.TORSO_PERSON_CONFIDENCE}
+
+    def _choose_tracking_box(self, detections, faces):
+        """Return the finest stable target appropriate for the requested mode."""
+        if self.ai_track_target == "object":
+            candidates = [d for d in detections if d["label"] != "person"]
+            return (max(candidates, key=lambda d: d["box"][2] * d["box"][3])["box"]
+                    if candidates else None)
+        return self._choose_person_target(detections, faces)
+
+    def _search_for_target(self, yaw, pitch):
+        """Sweep the head slowly when vision loses its target.
+
+        This is intentionally head-only: reacquisition must never cause the
+        dog to walk after a person/object disappears.
+        """
+        now = time.monotonic()
+        if now - self._last_search_at < 0.30:
+            return yaw, pitch
+        self._last_search_at = now
+        self._search_yaw += 8.0 * self._search_direction
+        if abs(self._search_yaw) >= 78:
+            self._search_yaw = max(-78, min(78, self._search_yaw))
+            self._search_direction *= -1.0
+        self.dog.head_move([[self._search_yaw, 0, pitch]], pitch_comp=-35,
+                           immediately=True, speed=55)
+        return self._search_yaw, pitch
+
     def _watch_loop(self):
         import cv2
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         yaw = 0.0
         pitch = 0.0
         try:
             while self.watch_on:
+                if (getattr(self, "_cmd_listening", False)
+                        or getattr(self, "_speech_active", False)):
+                    # Microphone clarity and natural speech matter more than
+                    # camera centering during a conversation turn.
+                    time.sleep(0.08)
+                    continue
                 frame = self.picam2.capture_array()
                 if frame.ndim == 3 and frame.shape[2] == 4:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                 frame = self._brighten(frame, cv2)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(50, 50))
-                if len(faces) > 0:
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    ex = (x + w / 2.0) - 320
-                    ey = (y + h / 2.0) - 240
-                    if ex > 15 and yaw > -80:
-                        yaw -= 0.5 * int(ex / 30.0 + 0.5)
-                    elif ex < -15 and yaw < 80:
-                        yaw += 0.5 * int(-ex / 30.0 + 0.5)
-                    if ey > 25:
-                        pitch = max(pitch - int(ey / 50.0 + 0.5), -30)
-                    elif ey < -25:
-                        pitch = min(pitch + int(-ey / 50.0 + 0.5), 30)
-                    self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
-                                       immediately=True, speed=100)
-                time.sleep(0.05)
+                faces = self.detect_faces(cv2, frame, gray)
+                self._latest_faces = [self._box_from_face(face) for face in faces]
+                self._latest_faces_at = time.monotonic()
+                self._detect_human_features(frame, cv2)
+                detections = self._get_ai_detections()
+                target = self._choose_tracking_box(detections, faces)
+                if self.ai_track_target == "person":
+                    self._latest_person_target = target
+                    target_box = target["aim"] if target else None
+                    # Recognition follows the associated face, not simply the
+                    # largest face anywhere in frame, so a bystander cannot
+                    # overwrite the active person's identity status.
+                    if target and target["face"] is not None:
+                        for raw_face in faces:
+                            if self._box_from_face(raw_face) == target["face"]:
+                                try:
+                                    target["identity"] = self.remember_visible_face(
+                                        cv2, frame, gray, raw_face)
+                                except Exception as exc:
+                                    # Identity is an enhancement, never a
+                                    # reason to lose the person tracker.
+                                    print(f"face recognition warning: {exc}")
+                                    target["identity"] = "unavailable"
+                                break
+                else:
+                    self._latest_person_target = None
+                    target_box = target
+                if target_box is None:
+                    self._face_tracking_locked = False
+                    self._person_tracking_locked = False
+                    # A short grace period makes one dropped frame invisible;
+                    # after that, sweep until either the AI person/object box
+                    # or the nested face box is detected again.
+                    if time.monotonic() - self._tracked_at > 0.35:
+                        yaw, pitch = self._search_for_target(yaw, pitch)
+                    time.sleep(0.05)
+                    continue
+                x, y, w, h = target_box
+                person_locked = bool(self.ai_track_target == "person" and target)
+                face_locked = bool(person_locked and target["face"] is not None)
+                self._person_tracking_locked = person_locked
+                self._face_tracking_locked = face_locked
+                self._tracked_at = time.monotonic()
+                self._search_yaw = yaw
+                ex = (x + w / 2.0) - 320
+                ey = (y + h / 2.0) - 240
+                # Rate-limit each correction and use lower servo speed. This
+                # turns the former snap-to-box behavior into a smooth chase.
+                if abs(ex) > 15:
+                    yaw += max(-2.0, min(2.0, -ex * 0.020))
+                    yaw = max(-80, min(80, yaw))
+                if abs(ey) > 25:
+                    pitch += max(-0.75, min(0.75, -ey * 0.015))
+                    upward_limit = (15 if face_locked
+                                    and self.action_flow.posture == Posetures.SIT
+                                    else 10 if person_locked
+                                    and self.action_flow.posture == Posetures.SIT
+                                    else 0)
+                    pitch = max(-5 if face_locked else 0,
+                                min(upward_limit, pitch))
+                self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
+                                   immediately=True, speed=42)
+                time.sleep(0.08)
         except Exception as e:
             print(f"watch loop error: {e}")
             self.watch_on = False
+            now = time.monotonic()
+            self._watch_failure_times = [t for t in self._watch_failure_times
+                                         if now - t < 60.0]
+            self._watch_failure_times.append(now)
+            if len(self._watch_failure_times) >= 3:
+                # A thread failure does not end the Python service, so let
+                # systemd's existing Restart=always policy rebuild the camera
+                # and all tracking state after repeated failures.
+                print("watch loop failed repeatedly; restarting pidog-gpt service")
+                os._exit(1)
+            # One bad frame or recognition result should recover locally and
+            # retain the rest of the assistant session.
+            delay = float(len(self._watch_failure_times))
+            print(f"watch mode: retrying after {delay:.0f}s")
+            time.sleep(delay)
+            if (getattr(self, "auto_tracking", True)
+                    and not self.balance_on
+                    and not getattr(self, "guard_on", False)):
+                self.start_watch()
 
 
     # -- live camera stream ---------------------------------------------------
@@ -791,6 +1445,93 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                         if frame.ndim == 3 and frame.shape[2] == 4:
                             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
                         frame = assistant._brighten(frame, cv2)
+                        # Detection is performed on the IMX500 itself; this
+                        # only draws its latest results on the local stream.
+                        for detection in assistant._last_ai_detections:
+                            x, y, w, h = detection["box"]
+                            confirmed_person = (detection["label"] == "person"
+                                                and detection.get("person_confirmed", False))
+                            possible_person = (detection["label"] == "person"
+                                               and not confirmed_person)
+                            label_name = ("person" if confirmed_person else
+                                          "possible person" if possible_person else
+                                          detection["label"])
+                            label = f'{label_name} {detection["score"]:.0%}'
+                            cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                          (40, 220, 40) if not possible_person else
+                                          (50, 150, 255), 2)
+                            cv2.putText(frame, label, (x, max(16, y - 6)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                        (40, 220, 40) if not possible_person else
+                                        (50, 150, 255), 1, cv2.LINE_AA)
+                        features = assistant._human_features
+                        if time.monotonic() - features.get("timestamp", 0.0) < 1.0:
+                            torso = features.get("torso")
+                            if torso:
+                                x, y, w, h = torso
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (255, 80, 210), 2)
+                                torso_kind = features.get("torso_kind") or "human torso"
+                                cv2.putText(frame, f"{torso_kind}: 90% person",
+                                            (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                                            (255, 80, 210), 1, cv2.LINE_AA)
+                            for arm in features.get("arms", []):
+                                points = arm["points"]
+                                for start, end in zip(points, points[1:]):
+                                    cv2.line(frame, start, end, (80, 220, 255), 3)
+                                cv2.putText(frame, arm["label"], points[-1],
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                                            (80, 220, 255), 1, cv2.LINE_AA)
+                            for x, y, w, h in features.get("hands", []):
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (80, 255, 120), 2)
+                                cv2.putText(frame, "hand", (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                            (80, 255, 120), 1, cv2.LINE_AA)
+                        # The face overlay is intentionally a second, nested
+                        # box rather than a replacement for the AI person
+                        # box.  It makes it clear that Doggie sees both the
+                        # whole person and the face used for face tracking.
+                        if time.monotonic() - assistant._latest_faces_at < 0.8:
+                            people = [d["box"] for d in assistant._last_ai_detections
+                                      if d["label"] == "person"]
+                            for x, y, w, h in assistant._latest_faces:
+                                nested = any(assistant._face_is_inside(
+                                    (x, y, w, h), person) for person in people)
+                                color = (255, 190, 40) if nested else (255, 120, 40)
+                                label = "face (person)" if nested else "face"
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              color, 2)
+                                cv2.putText(frame, label, (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                            color, 1, cv2.LINE_AA)
+                        target = assistant._latest_person_target
+                        if target:
+                            # These regions are derived from the AI person
+                            # box. They let the operator see the hierarchy:
+                            # full body -> head/upper torso -> recognized face.
+                            if target["head"]:
+                                x, y, w, h = target["head"]
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (80, 220, 255), 1)
+                                cv2.putText(frame, "head target", (x, max(16, y - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                            (80, 220, 255), 1, cv2.LINE_AA)
+                            if target["torso"]:
+                                x, y, w, h = target["torso"]
+                                cv2.rectangle(frame, (x, y), (x + w, y + h),
+                                              (255, 90, 220), 1)
+                                cv2.putText(frame, "upper torso", (x, y + 16),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                            (255, 90, 220), 1, cv2.LINE_AA)
+                            if target.get("identity") and target["face"]:
+                                x, y, _, _ = target["face"]
+                                identity = ("owner" if target["identity"] == "owner"
+                                            else "unrecognized person")
+                                cv2.putText(frame, identity, (x, y + 18),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                            (40, 255, 255), 1, cv2.LINE_AA)
                         ok, jpg = cv2.imencode(".jpg", frame,
                                                [cv2.IMWRITE_JPEG_QUALITY, 80])
                         if not ok:
@@ -845,12 +1586,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if not text:
             print("(woke but heard nothing -- back to listening)")
             return ''
+        if not self._voice_and_face_authorized(text):
+            return "I heard you, but I need my owner's voice before I can follow commands."
         self._last_user_text = text
         direct_action = self._direct_action_for_text(text)
         if direct_action is not None:
             return f"\nACTIONS: {direct_action}"
         self._last_visual_query = self._is_visual_query(text)
         self._last_identity_query = self._is_identity_query(text)
+        if self._last_visual_query and not self._camera_available():
+            return self._build_camera_unavailable_reply()
         if self._is_git_status_query(text):
             return self._build_git_status_reply()
         if self._is_status_report_query(text):
@@ -868,6 +1613,25 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             # terminate Doggie's main process and trigger a systemd restart.
             print(f"cloud reply unavailable; using offline mode: {exc}")
             return self._build_offline_reply(self._last_user_text)
+
+    def _voice_and_face_authorized(self, text):
+        """Gate microphone commands after the owner has enrolled a voice.
+
+        A clear non-owner face is a second required factor. When the camera
+        cannot see a usable face, the verified local voice is enough.
+        """
+        if not self.voice_identity.enrolled():
+            return True  # initial enrollment must remain possible
+        matched, score, detail = self.voice_identity.verify_pcm(
+            self._last_stt_audio, self._last_stt_sample_rate)
+        print(f"owner voice check: {detail} ({score:.2f})")
+        if not matched:
+            return False
+        face_status = self.owner_face_status()
+        if face_status is False:
+            print("owner face check: visible face did not match")
+            return False
+        return True
 
     def on_stop(self):
         if self._web_server is not None:
@@ -902,8 +1666,15 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             return True
 
         words = normalized.split()
-        joined_pairs = {" ".join(words[index:index + 2]) for index in range(max(0, len(words) - 1))}
-        return any(pair in joined_pairs for pair in {"hey doggie", "doggie", "okay doggie"})
+        joined_pairs = {" ".join(words[index:index + 2])
+                        for index in range(max(0, len(words) - 1))}
+        return ("doggie" in words
+                or any(pair in joined_pairs for pair in {"hey doggie", "okay doggie"}))
+
+    @classmethod
+    def _is_wake_prefix(cls, text: str) -> bool:
+        """True only for a bare greeting that may precede Doggie's name."""
+        return cls._normalize_phrase(text).split() == ["hey"]
 
     def _remember_sound_direction(self) -> None:
         try:
@@ -923,6 +1694,17 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     def _is_visual_query(cls, text: str) -> bool:
         normalized = cls._normalize_phrase(text)
         return any(pattern in normalized for pattern in cls.VISUAL_QUERY_PATTERNS)
+
+    def _camera_available(self) -> bool:
+        """Return whether this response can be based on a live camera frame."""
+        return bool(getattr(self, "with_image", False) and getattr(self, "picam2", None))
+
+    @staticmethod
+    def _build_camera_unavailable_reply() -> str:
+        return (
+            "I can't see right now because my camera is unavailable. "
+            "I can still hear you and respond to voice commands.\nACTIONS:"
+        )
 
     @classmethod
     def _is_identity_query(cls, text: str) -> bool:
@@ -995,7 +1777,16 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         cleaned = re.sub(r"[^a-zA-Z0-9 _.-]+", "", value).strip()
         return cleaned[:48]
 
-    def _get_network_status(self) -> dict[str, str | int | None]:
+    @staticmethod
+    def _has_internet_access() -> bool:
+        """Check routed internet access without relying on ICMP/ping."""
+        try:
+            with socket.create_connection(("1.1.1.1", 443), timeout=2):
+                return True
+        except OSError:
+            return False
+
+    def _get_network_status(self) -> dict[str, str | int | bool | None]:
         """Read non-secret Wi-Fi status from NetworkManager.
 
         This deliberately does not read passwords, saved connection secrets,
@@ -1010,7 +1801,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 check=True,
             ).stdout.strip()
             if not connection or connection == "--":
-                return {"connected": "no", "ssid": None, "signal": None, "ip": None}
+                return {"connected": "no", "internet": False, "ssid": None, "signal": None, "ip": None}
 
             ssid = connection
             signal = None
@@ -1043,12 +1834,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             ip = address[0].split("/", 1)[0] if address else None
             return {
                 "connected": "yes",
+                "internet": self._has_internet_access(),
                 "ssid": self._safe_spoken_value(ssid),
                 "signal": signal,
                 "ip": self._safe_spoken_value(ip or ""),
             }
         except (OSError, subprocess.SubprocessError):
-            return {"connected": "unknown", "ssid": None, "signal": None, "ip": None}
+            return {"connected": "unknown", "internet": None, "ssid": None, "signal": None, "ip": None}
 
     def _build_status_report_reply(self) -> str:
         network = self._get_network_status()
@@ -1056,6 +1848,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if network["connected"] == "yes":
             network_name = network["ssid"] or "my saved Wi-Fi network"
             parts.append(f"I'm connected to {network_name}.")
+            if network.get("internet") is False:
+                parts.append("I do not have internet access.")
             if isinstance(network["signal"], int):
                 parts.append(f"Wi-Fi signal is {network['signal']} percent.")
             if network["ip"]:
@@ -1076,9 +1870,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         """Return a brief, local-only startup announcement for TTS."""
         parts = ["Doggie is ready."]
         network = self._get_network_status()
-        if network["connected"] == "yes":
+        if network["connected"] == "yes" and network.get("internet") is True:
             network_name = network["ssid"] or "my saved Wi-Fi network"
             parts.append(f"Doggie is online on {network_name}.")
+        elif network["connected"] == "yes":
+            network_name = network["ssid"] or "my saved Wi-Fi network"
+            parts.append(f"Doggie is connected to {network_name}, but has no internet access.")
         else:
             parts.append("Doggie is offline.")
 
@@ -1096,11 +1893,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return True, True, command
 
     def _start_web_control_server(self) -> None:
-        """Start the loopback-only command panel when its secret is configured."""
-        token = os.environ.get("DOGGIE_CONTROL_TOKEN", "").strip()
-        if not token:
-            print("web control disabled: DOGGIE_CONTROL_TOKEN is not configured")
+        """Start the authenticated command panel when its password is configured."""
+        password = os.environ.get("DOGGIE_CONTROL_PASSWORD", "").strip()
+        if not password:
+            print("web control disabled: DOGGIE_CONTROL_PASSWORD is not configured")
             return
+        # Keep the private safe-shutdown integration compatible with its existing
+        # header while the browser controller uses the normal password login.
+        shutdown_secret = os.environ.get("DOGGIE_CONTROL_TOKEN", "").strip() or password
 
         module = self
 
@@ -1133,10 +1933,23 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             def _forbidden(self) -> None:
                 self._json(403, {"error": "Sign in required"})
 
+            def _shutdown_authorized(self) -> bool:
+                supplied = (
+                    self.headers.get("X-Doggie-Control-Password", "")
+                    or self.headers.get("X-Doggie-Control-Token", "")
+                )
+                return bool(supplied) and hmac.compare_digest(supplied, shutdown_secret)
+
             def do_GET(self) -> None:
                 path = urlparse(self.path).path
                 if path == "/health":
                     self._json(200, {"status": "ok"})
+                    return
+                if path == "/internal/safe-shutdown-status":
+                    if not self._shutdown_authorized():
+                        self._forbidden()
+                        return
+                    self._json(200, dict(module._shutdown_status))
                     return
                 if path == "/api/status":
                     if not self._session_valid():
@@ -1148,15 +1961,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     self._json(404, {"error": "Not found"})
                     return
                 if not self._session_valid():
-                    page = b'''<!doctype html><title>Doggie Control</title><style>body{font:16px system-ui;max-width:420px;margin:4rem auto;background:#101827;color:#eef;padding:1rem}input,button{font:inherit;padding:.7rem;margin:.4rem 0;width:100%;box-sizing:border-box}button{background:#38bdf8;border:0;border-radius:.4rem}</style><h1>Doggie Control</h1><p>Private control panel. Sign in with the device token.</p><form method="post" action="/login"><input type="password" name="token" autocomplete="off" placeholder="Control token" required><button>Sign in</button></form>'''
+                    page = b'''<!doctype html><title>Doggie Control</title><style>body{font:16px system-ui;max-width:420px;margin:4rem auto;background:#101827;color:#eef;padding:1rem}input,button{font:inherit;padding:.7rem;margin:.4rem 0;width:100%;box-sizing:border-box}button{background:#38bdf8;border:0;border-radius:.4rem}</style><h1>Doggie Control</h1><p>Private control panel. Sign in with your password.</p><form method="post" action="/login"><input type="password" name="password" autocomplete="current-password" placeholder="Password" required><button>Sign in</button></form>'''
                     self._send(200, page, "text/html; charset=utf-8")
                     return
-                commands = "".join(
-                    f'<button type="button" data-command="{html.escape(command, quote=True)}">'
-                    f'{html.escape(command)}</button>'
-                    for command in sorted(module.WEB_COMMANDS)
-                )
-                page = f'''<!doctype html><title>Doggie Control</title><style>body{{font:16px system-ui;max-width:600px;margin:2rem auto;background:#101827;color:#eef;padding:1rem}}button{{font:inherit;padding:.7rem;margin:.25rem;background:#38bdf8;border:0;border-radius:.4rem}}#result{{min-height:1.4rem}}</style><h1>Doggie Control</h1><p>Commands are queued through Doggie's normal action path. Walking is not available here.</p><div>{commands}</div><p id="result"></p><script>async function sendCommand(command){{const r=await fetch('/api/command',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command}})}});const data=await r.json();document.getElementById('result').textContent=data.status||data.error||'Request failed';}}for(const button of document.querySelectorAll('[data-command]')){{button.addEventListener('click',()=>sendCommand(button.dataset.command));}}</script>'''.encode("utf-8")
+                page = b'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doggie Safe Controller</title><style>*{box-sizing:border-box}body{margin:0;background:#07101b;color:#eef;font:16px system-ui;overflow:hidden}.camera{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:.45}.ui{position:relative;min-height:100vh;padding:1rem;display:flex;align-items:end;justify-content:space-between;background:linear-gradient(transparent 35%,#06101ddd)}h1{position:absolute;top:.5rem;left:1rem;font-size:1rem}.pad{display:grid;grid-template:repeat(3,58px)/repeat(3,58px);gap:5px}.pad button{font-size:20px}.up{grid-column:2}.left{grid-column:1;grid-row:2}.mid{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}button{border:1px solid #7dd3fc;border-radius:16px;background:#0e2947e8;color:#fff;touch-action:manipulation}button:active{background:#0284c7}button:disabled{opacity:.35}.rightside{display:flex;align-items:end;gap:1rem}.actions{display:grid;grid-template-columns:repeat(2,58px);gap:6px}.actions button{height:58px;font-weight:700}.label{text-align:center;font-size:11px;margin:0 0 5px}.note{position:absolute;top:2.5rem;left:1rem;right:1rem;font-size:12px;max-width:42rem}@media(max-width:620px){.ui{padding:.7rem}.pad{grid-template:repeat(3,50px)/repeat(3,50px)}.actions{grid-template-columns:repeat(2,50px)}.actions button{height:50px}.rightside{gap:.5rem}}</style><img class="camera" src="http://''' + module._web_camera_host().encode("ascii") + b''':8080/"><main class="ui"><h1>Doggie Safe Controller</h1><p class="note">Uses Doggie's normal command path. Walking and unrestricted head movement stay locked for safety.</p><section><p class="label">BODY</p><div class="pad"><button class="up" data-command="stand">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="stop">&#9632;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="lie down">&#9660;</button></div></section><section class="rightside"><div><p class="label">HEAD (SAFE)</p><div class="pad"><button class="up" data-command="nod">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="shake head">&#9679;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="head down">&#9660;</button></div></div><div><p class="label">ACTIONS</p><div class="actions"><button data-command="bark">A</button><button data-command="wag tail">B</button><button data-command="stretch">Y</button><button data-command="status report">Z</button></div></div></section></main><p id="result" style="position:fixed;bottom:.5rem;left:50%;transform:translateX(-50%);margin:0"></p><script>async function send(c){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:c})});const d=await r.json();document.getElementById('result').textContent=d.status||d.error||'Request failed'}document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>send(b.dataset.command))</script>'''
                 self._send(200, page, "text/html; charset=utf-8")
 
             def do_POST(self) -> None:
@@ -1167,10 +1975,27 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     self._json(400, {"error": "Invalid request"})
                     return
                 raw = self.rfile.read(length)
+                if path == "/internal/safe-shutdown":
+                    if not self._shutdown_authorized():
+                        self._forbidden()
+                        return
+                    if module._shutdown_status.get("state") in {
+                        "queued", "lowering_rear", "lowering_front"
+                    }:
+                        self._json(409, dict(module._shutdown_status))
+                        return
+                    try:
+                        module._web_commands.put_nowait("safe shutdown")
+                    except queue.Full:
+                        self._json(429, {"error": "Command queue is full"})
+                        return
+                    module._shutdown_status = {"state": "queued", "detail": "waiting for live controller"}
+                    self._json(202, dict(module._shutdown_status))
+                    return
                 if path == "/login":
                     form = parse_qs(raw.decode("utf-8", errors="replace"))
-                    supplied = (form.get("token") or [""])[0]
-                    if not hmac.compare_digest(supplied, token):
+                    supplied = (form.get("password") or [""])[0]
+                    if not hmac.compare_digest(supplied, password):
                         self._forbidden()
                         return
                     session = secrets.token_urlsafe(32)
@@ -1204,8 +2029,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             def log_message(self, format, *args):
                 return
 
+        host = os.environ.get("DOGGIE_CONTROL_HOST", "127.0.0.1").strip()
+        if host not in {"127.0.0.1", "0.0.0.0"}:
+            print("web control disabled: DOGGIE_CONTROL_HOST must be 127.0.0.1 or 0.0.0.0")
+            return
         try:
-            self._web_server = ThreadingHTTPServer(("127.0.0.1", 8093), Handler)
+            self._web_server = ThreadingHTTPServer((host, 8093), Handler)
         except OSError as exc:
             print(f"web control disabled: {exc}")
             return
@@ -1216,7 +2045,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             daemon=True,
         )
         self._web_server_thread.start()
-        print("web control available at http://127.0.0.1:8093/")
+        print(f"web control available at http://{host}:8093/")
+
+    @staticmethod
+    def _web_camera_host() -> str:
+        """Configured LAN address used only for the controller camera background."""
+        return os.environ.get("DOGGIE_CONTROL_CAMERA_HOST", "127.0.0.1").strip()
 
     def _get_git_status(self) -> dict[str, object]:
         repo_dir = Path(__file__).resolve().parent.parent

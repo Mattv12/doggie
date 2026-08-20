@@ -1958,12 +1958,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     page = b'''<!doctype html><title>Doggie Control</title><style>body{font:16px system-ui;max-width:420px;margin:4rem auto;background:#101827;color:#eef;padding:1rem}input,button{font:inherit;padding:.7rem;margin:.4rem 0;width:100%;box-sizing:border-box}button{background:#38bdf8;border:0;border-radius:.4rem}</style><h1>Doggie Control</h1><p>Private control panel. Sign in with the device token.</p><form method="post" action="/login"><input type="password" name="token" autocomplete="off" placeholder="Control token" required><button>Sign in</button></form>'''
                     self._send(200, page, "text/html; charset=utf-8")
                     return
-                commands = "".join(
-                    f'<button type="button" data-command="{html.escape(command, quote=True)}">'
-                    f'{html.escape(command)}</button>'
-                    for command in sorted(module.WEB_COMMANDS)
-                )
-                page = f'''<!doctype html><title>Doggie Control</title><style>body{{font:16px system-ui;max-width:600px;margin:2rem auto;background:#101827;color:#eef;padding:1rem}}button{{font:inherit;padding:.7rem;margin:.25rem;background:#38bdf8;border:0;border-radius:.4rem}}#result{{min-height:1.4rem}}</style><h1>Doggie Control</h1><p>Commands are queued through Doggie's normal action path. Walking is not available here.</p><div>{commands}</div><p id="result"></p><script>async function sendCommand(command){{const r=await fetch('/api/command',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command}})}});const data=await r.json();document.getElementById('result').textContent=data.status||data.error||'Request failed';}}for(const button of document.querySelectorAll('[data-command]')){{button.addEventListener('click',()=>sendCommand(button.dataset.command));}}</script>'''.encode("utf-8")
+                page = b'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doggie Safe Controller</title><style>*{box-sizing:border-box}body{margin:0;background:#07101b;color:#eef;font:16px system-ui;overflow:hidden}.camera{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:.45}.ui{position:relative;min-height:100vh;padding:1rem;display:flex;align-items:end;justify-content:space-between;background:linear-gradient(transparent 35%,#06101ddd)}h1{position:absolute;top:.5rem;left:1rem;font-size:1rem}.pad{display:grid;grid-template:repeat(3,58px)/repeat(3,58px);gap:5px}.pad button{font-size:20px}.up{grid-column:2}.left{grid-column:1;grid-row:2}.mid{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}button{border:1px solid #7dd3fc;border-radius:16px;background:#0e2947e8;color:#fff;touch-action:manipulation}button:active{background:#0284c7}button:disabled{opacity:.35}.rightside{display:flex;align-items:end;gap:1rem}.actions{display:grid;grid-template-columns:repeat(2,58px);gap:6px}.actions button{height:58px;font-weight:700}.label{text-align:center;font-size:11px;margin:0 0 5px}.note{position:absolute;top:2.5rem;left:1rem;right:1rem;font-size:12px;max-width:42rem}@media(max-width:620px){.ui{padding:.7rem}.pad{grid-template:repeat(3,50px)/repeat(3,50px)}.actions{grid-template-columns:repeat(2,50px)}.actions button{height:50px}.rightside{gap:.5rem}}</style><img class="camera" src="http://''' + self._web_camera_host().encode("ascii") + b''':8080/"><main class="ui"><h1>Doggie Safe Controller</h1><p class="note">Uses Doggie's normal command path. Walking and unrestricted head movement stay locked for safety.</p><section><p class="label">BODY</p><div class="pad"><button class="up" data-command="stand">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="stop">&#9632;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="lie down">&#9660;</button></div></section><section class="rightside"><div><p class="label">HEAD (SAFE)</p><div class="pad"><button class="up" data-command="nod">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="shake head">&#9679;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="head down">&#9660;</button></div></div><div><p class="label">ACTIONS</p><div class="actions"><button data-command="bark">A</button><button data-command="wag tail">B</button><button data-command="stretch">Y</button><button data-command="status report">Z</button></div></div></section></main><p id="result" style="position:fixed;bottom:.5rem;left:50%;transform:translateX(-50%);margin:0"></p><script>async function send(c){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:c})});const d=await r.json();document.getElementById('result').textContent=d.status||d.error||'Request failed'}document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>send(b.dataset.command))</script>'''
                 self._send(200, page, "text/html; charset=utf-8")
 
             def do_POST(self) -> None:
@@ -2028,8 +2023,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             def log_message(self, format, *args):
                 return
 
+        host = os.environ.get("DOGGIE_CONTROL_HOST", "127.0.0.1").strip()
+        if host not in {"127.0.0.1", "0.0.0.0"}:
+            print("web control disabled: DOGGIE_CONTROL_HOST must be 127.0.0.1 or 0.0.0.0")
+            return
         try:
-            self._web_server = ThreadingHTTPServer(("127.0.0.1", 8093), Handler)
+            self._web_server = ThreadingHTTPServer((host, 8093), Handler)
         except OSError as exc:
             print(f"web control disabled: {exc}")
             return
@@ -2040,7 +2039,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             daemon=True,
         )
         self._web_server_thread.start()
-        print("web control available at http://127.0.0.1:8093/")
+        print(f"web control available at http://{host}:8093/")
+
+    @staticmethod
+    def _web_camera_host() -> str:
+        """Configured LAN address used only for the controller camera background."""
+        return os.environ.get("DOGGIE_CONTROL_CAMERA_HOST", "127.0.0.1").strip()
 
     def _get_git_status(self) -> dict[str, object]:
         repo_dir = Path(__file__).resolve().parent.parent

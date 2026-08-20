@@ -1,0 +1,3 @@
+houndmind_ai
+logs
+tools

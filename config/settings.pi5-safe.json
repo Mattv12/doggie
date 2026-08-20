@@ -1,0 +1,817 @@
+{
+  "profile": "pi4",
+  "profiles": {
+    "pi3": {},
+    "pi4": {
+      "loop": {
+        "tick_hz": 10,
+        "max_cycles": null
+      },
+      "modules": {
+        "vision_pi4": {
+          "enabled": false,
+          "required": false
+        },
+        "face_recognition": {
+          "enabled": false,
+          "required": false
+        },
+        "semantic_labeler": {
+          "enabled": false,
+          "required": false
+        },
+        "slam_pi4": {
+          "enabled": false,
+          "required": false
+        },
+        "telemetry_dashboard": {
+          "enabled": false,
+          "required": false
+        },
+        "hal_sensors": {
+          "enabled": true,
+          "required": false
+        },
+        "event_log": {
+          "enabled": true,
+          "required": false
+        },
+        "hal_motors": {
+          "enabled": false,
+          "required": false
+        },
+        "scanning": {
+          "enabled": false,
+          "required": false
+        },
+        "orientation": {
+          "enabled": false,
+          "required": false
+        },
+        "navigation": {
+          "enabled": false,
+          "required": false
+        },
+        "mapping": {
+          "enabled": false,
+          "required": false
+        },
+        "behavior": {
+          "enabled": false,
+          "required": false
+        },
+        "attention": {
+          "enabled": false,
+          "required": false
+        },
+        "watchdog": {
+          "enabled": false,
+          "required": false
+        },
+        "service_watchdog": {
+          "enabled": false,
+          "required": false
+        },
+        "calibration": {
+          "enabled": false,
+          "required": false
+        },
+        "led_manager": {
+          "enabled": false,
+          "required": false
+        },
+        "safety": {
+          "enabled": false,
+          "required": false
+        },
+        "health": {
+          "enabled": false,
+          "required": false
+        },
+        "balance": {
+          "enabled": false,
+          "required": false
+        },
+        "wifi_localization": {
+          "enabled": false,
+          "required": false
+        },
+        "vision": {
+          "enabled": false,
+          "required": false
+        },
+        "voice": {
+          "enabled": false,
+          "required": false
+        },
+        "energy_emotion": {
+          "enabled": false,
+          "required": false
+        }
+      },
+      "settings": {
+        "navigation": {
+          "scan_interval_s": 0.3,
+          "scan_interval_min_s": 0.2,
+          "scan_interval_max_s": 1.5
+        },
+        "vision_pi4": {
+          "frame_interval_s": 0.1
+        }
+      }
+    }
+  },
+  "loop": {
+    "tick_hz": 5,
+    "max_cycles": 10
+  },
+  "modules": {
+    "hal_sensors": {
+      "enabled": true,
+      "required": false
+    },
+    "scanning": {
+      "enabled": false,
+      "required": false
+    },
+    "orientation": {
+      "enabled": false,
+      "required": false
+    },
+    "hal_motors": {
+      "enabled": false,
+      "required": false
+    },
+    "perception": {
+      "enabled": true,
+      "required": false
+    },
+    "navigation": {
+      "gentle_recovery_stuck_count": 3,
+      "gentle_recovery_cooldown_s": 8.0,
+      "enabled": false,
+      "required": false
+    },
+    "mapping": {
+      "enabled": false,
+      "required": false,
+      "path_planning_enabled": true
+    },
+    "behavior": {
+      "enabled": false,
+      "required": false
+    },
+    "attention": {
+      "enabled": false,
+      "required": false
+    },
+    "calibration": {
+      "enabled": false,
+      "required": false
+    },
+    "event_log": {
+      "enabled": true,
+      "required": false
+    },
+    "health": {
+      "enabled": false,
+      "required": false
+    },
+    "service_watchdog": {
+      "enabled": false,
+      "required": false
+    },
+    "watchdog": {
+      "enabled": false,
+      "required": false
+    },
+    "balance": {
+      "enabled": false,
+      "required": false
+    },
+    "wifi_localization": {
+      "enabled": false,
+      "required": false,
+      "scan_interval": 10.0
+    },
+    "safety": {
+      "enabled": false,
+      "required": false
+    },
+    "vision": {
+      "enabled": false,
+      "required": false
+    },
+    "vision_pi4": {
+      "enabled": false,
+      "required": false
+    },
+    "voice": {
+      "enabled": false,
+      "required": false
+    },
+    "face_recognition": {
+      "enabled": false,
+      "required": false
+    },
+    "semantic_labeler": {
+      "enabled": false,
+      "required": false
+    },
+    "slam_pi4": {
+      "enabled": false,
+      "required": false
+    },
+    "telemetry_dashboard": {
+      "enabled": false,
+      "required": false
+    },
+    "energy_emotion": {
+      "enabled": false,
+      "required": false
+    },
+    "led_manager": {
+      "enabled": false,
+      "required": false
+    }
+  },
+  "settings": {
+    "sensors": {
+      "poll_hz": 10,
+      "history_size": 10,
+      "enable_ultrasonic": true,
+      "enable_touch": true,
+      "enable_sound": true,
+      "enable_imu": true,
+      "distance_samples": 3,
+      "distance_sample_delay_s": 0.03,
+      "distance_use_median": true,
+      "distance_debounce_s": 0.0,
+      "distance_min_cm": 2,
+      "distance_max_cm": 200,
+      "distance_outlier_reject_z": 2.5,
+      "distance_ema_alpha": 0.0,
+      "touch_debounce_s": 0.05,
+      "sound_direction_on_detect": true,
+      "imu_lpf_alpha": 0.3
+    },
+    "perception": {
+      "obstacle_cm": 20,
+      "fusion": {
+        "fusion_anchor_distance_cm": 120,
+        "fusion_min_confidence": 0.3
+      }
+    },
+    "habituation": {
+      "enabled": true,
+      "stimuli": [
+        "sound",
+        "touch"
+      ],
+      "window_s": 1.0,
+      "threshold": 3,
+      "recovery_s": 6.0
+    },
+    "face_recognition": {
+      "enabled": false,
+      "backend": "stub",
+      "scale_factor": 1.1,
+      "min_neighbors": 5,
+      "min_face_px": 60,
+      "opencv_haar_path": "",
+      "lbph": {
+        "enabled": true,
+        "model_path": "data/face_model.yml",
+        "dataset_dir": "data/face_dataset",
+        "label_map_path": "data/face_labels.json",
+        "confidence_threshold": 70.0
+      },
+      "embeddings_path": "data/face_embeddings.json",
+      "match_threshold": 0.6,
+      "http": {
+        "enabled": false,
+        "host": "0.0.0.0",
+        "port": 8088
+      }
+    },
+    "vision_pi4": {
+      "enabled": false,
+      "backend": "picamera2",
+      "device_index": 0,
+      "frame_interval_s": 0.2,
+      "http": {
+        "enabled": false,
+        "host": "0.0.0.0",
+        "port": 8090
+      }
+    },
+    "voice_assistant": {
+      "enabled": false,
+      "cooldown_s": 1.0,
+      "stt": {
+        "enabled": false,
+        "backend": "speech_recognition",
+        "vosk_model_path": ""
+      },
+      "tts": {
+        "enabled": false,
+        "backend": "pidog"
+      },
+      "command_map": {
+        "sit": "sit",
+        "stand": "stand",
+        "lie": "lie",
+        "down": "lie",
+        "forward": "forward",
+        "back": "backward",
+        "backward": "backward",
+        "turn left": "turn left",
+        "turn right": "turn right",
+        "wag": "wag tail",
+        "wag tail": "wag tail",
+        "shake": "shake head",
+        "shake head": "shake head",
+        "stop": "lie"
+      },
+      "aliases": {
+        "go": "forward",
+        "reverse": "backward",
+        "halt": "stop",
+        "sleep": "lie"
+      },
+      "http": {
+        "enabled": false,
+        "host": "0.0.0.0",
+        "port": 8091
+      }
+    },
+    "semantic_labeler": {
+      "enabled": false,
+      "backend": "stub",
+      "interval_s": 0.5,
+      "model_path": "models/ssd_mobilenet_v3_large_coco_2020_01_14.pb",
+      "config_path": "models/ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt",
+      "labels_path": "models/coco_labels.txt",
+      "input_width": 320,
+      "input_height": 320,
+      "confidence_threshold": 0.5
+    },
+    "slam_pi4": {
+      "enabled": false,
+      "backend": "stub",
+      "interval_s": 0.2,
+      "gyro_scale": 0.0,
+      "stub_confidence": 0.1,
+      "rtabmap": {
+        "database_path": "rtabmap.db",
+        "frame_width": null,
+        "frame_height": null,
+        "rgbd_enabled": true,
+        "parameters": {
+          "RGBD/LinearUpdate": 0.1,
+          "RGBD/AngularUpdate": 0.1
+        }
+      },
+      "nav_hint_enabled": false,
+      "nav_target_heading_deg": null,
+      "nav_deadband_deg": 10.0
+    },
+    "telemetry_dashboard": {
+      "enabled": false,
+      "snapshot_interval_s": 0.5,
+      "context_keys": [
+        "sensor_reading",
+        "scan_latest",
+        "mapping_openings",
+        "navigation_action",
+        "behavior_action",
+        "safety_action",
+        "performance_telemetry",
+        "slam_pose",
+        "faces",
+        "semantic_labels"
+      ],
+      "http": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 8092
+      }
+    },
+    "sensor_health": {
+      "enabled": false,
+      "led_ok_color": "green",
+      "led_warning_color": "yellow",
+      "led_error_color": "red",
+      "log_enabled": true,
+      "ultrasonic_stale_s": 1.0,
+      "imu_stale_s": 1.0,
+      "touch_stale_s": 1.0,
+      "sound_stale_s": 1.0,
+      "error_is_critical": true
+    },
+    "navigation": {
+      "min_distance_cm": 15,
+      "emergency_stop_cm": 12,
+      "safe_distance_cm": 35,
+      "avoid_action": "backward",
+      "safe_action": "stand",
+      "scan_interval_s": 0.5,
+      "scan_interval_min_s": 0.2,
+      "scan_interval_max_s": 2.0,
+      "scan_mode": "sweep",
+      "scan_continuous": false,
+      "scan_history_size": 10,
+      "scan_samples": 3,
+      "scan_stale_s": 0.8,
+      "scan_yaw_max_deg": 60,
+      "enable_dynamic_scan": true,
+      "dynamic_scan_yaw_max_deg": 30,
+      "scan_step_deg": 15,
+      "scan_settle_s": 0.12,
+      "scan_between_reads_s": 0.04,
+      "scan_debounce_s": 0.05,
+      "scan_smoothing_alpha": 0.4,
+      "scan_min_valid_points": 3,
+      "scan_min_valid_ratio": 0.5,
+      "baseline_ema": 0.25,
+      "min_gap_width_deg": 30,
+      "min_score_cm": 60,
+      "confirm_window": 2,
+      "confirm_threshold": 2,
+      "turn_confidence_min": 0.6,
+      "low_confidence_cooldown_s": 0.8,
+      "scan_retry_limit": 2,
+      "no_go_enabled": false,
+      "no_go_window_s": 8.0,
+      "no_go_repeat_threshold": 3,
+      "head_scan_speed": 70,
+      "approach_delta_cm": 10,
+      "approach_delta_pct": 0.25,
+      "approach_confirm_window": 3,
+      "approach_confirm_threshold": 2,
+      "approach_cooldown_s": 2.0,
+      "backup_steps": 2,
+      "turn_degrees_on_gap": 30,
+      "retreat_turn_direction": "auto",
+      "turn_cooldown_s": 0.0,
+      "clear_path_streak_min": 0,
+      "clear_path_skip_scans": true,
+      "use_mapping_bias": true,
+      "mapping_bias_weight": 0.5,
+      "mapping_bias_min_confidence": 0.6,
+      "mapping_bias_cooldown_s": 1.0,
+      "use_grid_map": true,
+      "grid_cell_size_cm": 10,
+      "grid_influence_depth_cm": 100,
+      "grid_bias_weight": 0.7,
+      "slam_nav_enabled": false,
+      "slam_nav_override": true,
+      "slam_nav_min_confidence": 0.3,
+      "log_decision_enabled": true,
+      "log_decision_raw_angles": false,
+      "planner_enabled": true,
+      "planner_min_confidence": 0.6,
+      "planner_influence_weight": 0.0,
+      "planner_max_age_s": 2.0,
+      "stuck_time_window_s": 5.0,
+      "stuck_movement_threshold": 1500.0,
+      "stuck_min_samples": 10,
+      "stuck_cooldown_s": 6.0,
+      "stuck_strategy_repeat_window_s": 10.0,
+      "stuck_strategy_repeat_threshold": 3,
+      "avoidance_strategies": [
+        "smart_turn",
+        "backup_turn",
+        "zigzag",
+        "reverse_escape"
+      ],
+      "led_enabled": true,
+      "led_priority": 50,
+      "led_patrol_color": "green",
+      "led_turn_color": "orange",
+      "led_obstacle_color": "red",
+      "led_retreat_color": "red"
+    },
+    "movement": {
+      "gentle_recovery_speed": 80,
+      "turn_steps_small": 1,
+      "turn_steps_normal": 2,
+      "turn_steps_large": 4,
+      "walk_steps_short": 1,
+      "walk_steps_normal": 2,
+      "walk_steps_long": 3,
+      "backup_steps": 3,
+      "turn_degrees_per_step": 15.0,
+      "speed_slow": 80,
+      "speed_normal": 120,
+      "speed_fast": 200,
+      "speed_emergency": 100,
+      "speed_turn_slow": 100,
+      "speed_turn_normal": 200,
+      "speed_turn_fast": 220,
+      "step_pause_s": 0.02
+    },
+    "orientation": {
+      "gyro_scale": 1.0,
+      "bias_z": 0.0,
+      "calibration_enabled": true,
+      "calibration_settle_s": 0.3,
+      "calibration_duration_s": 2.0,
+      "calibration_samples": 30,
+      "calibration_max_bias_abs": 0.0,
+      "initial_heading_deg": 0.0,
+      "turn_tolerance_deg": 5.0,
+      "turn_timeout_s": 3.0
+    },
+    "mapping": {
+      "enabled": true,
+      "path_planning_enabled": true,
+      "sample_history_max": 500,
+      "sample_max_age_s": 0,
+      "home_map_enabled": false,
+      "home_map_max_samples": 500,
+      "home_map_max_age_s": 0,
+      "home_map_save_interval_s": 30,
+      "home_map_path": "data/home_map.json",
+      "cell_size_cm": 10,
+      "grid_enabled": true,
+      "grid_size": [
+        100,
+        100
+      ],
+      "opening_min_width_cm": 60,
+      "opening_max_width_cm": 120,
+      "opening_cell_conf_min": 0.6,
+      "safe_path_min_width_cm": 40,
+      "safe_path_max_width_cm": 200,
+      "safe_path_min_length_cells": 6,
+      "safe_path_cell_conf_min": 0.5,
+      "safe_path_score_weight_width": 0.6,
+      "safe_path_score_weight_distance": 0.4
+    },
+    "behavior": {
+      "idle_action": "stand",
+      "touch_action": "wag tail",
+      "sound_action": "shake head",
+      "avoid_action": "backward",
+      "explore_action": "forward",
+      "interact_action": "wag tail",
+      "actions_file": "actions.jsonc",
+      "action_sets": {
+        "idle": "idle",
+        "alert": "alert",
+        "avoid": "avoid",
+        "play": "play",
+        "rest": "rest",
+        "patrol": "patrol",
+        "explore": "explore",
+        "interact": "interact"
+      },
+      "random_idle_chance": 0.05,
+      "action_cooldown_s": 0.0,
+      "micro_idle_enabled": true,
+      "micro_idle_actions": [
+        "shake head",
+        "wag tail",
+        "shake head"
+      ],
+      "micro_idle_interval_s": 12.0,
+      "micro_idle_chance": 0.2,
+      "habituation_enabled": false,
+      "habituation_threshold": 3,
+      "habituation_recovery_s": 30.0,
+      "transition_guard_enabled": false,
+      "transition_min_dwell_s": 0.6,
+      "transition_confirm_ticks": 2,
+      "transition_immediate_states": [
+        "avoiding",
+        "alert"
+      ],
+      "autonomy_enabled": false,
+      "autonomy_interval_s": 8.0,
+      "autonomy_modes": [
+        "idle",
+        "patrol",
+        "explore",
+        "interact",
+        "play",
+        "rest"
+      ],
+      "autonomy_weights": {
+        "idle": 0.35,
+        "patrol": 0.25,
+        "explore": 0.15,
+        "interact": 0.1,
+        "play": 0.1,
+        "rest": 0.05
+      },
+      "autonomy_rest_energy_max": 0.35,
+      "autonomy_play_energy_min": 0.75,
+      "patrol_action": "forward",
+      "idle_choices": [
+        "idle_behavior",
+        "rest_behavior"
+      ],
+      "behavior_selection_mode": "weighted",
+      "behavior_weights": {
+        "idle_behavior": 0.8,
+        "rest_behavior": 0.2
+      },
+      "catalog": {}
+    },
+    "personality": {
+      "curiosity": 0.5,
+      "sociability": 0.5,
+      "activity": 0.5,
+      "apply_to_autonomy": true
+    },
+    "energy": {
+      "enabled": false,
+      "initial": 0.6,
+      "min": 0.0,
+      "max": 1.0,
+      "decay_per_tick": 0.01,
+      "boost_touch": 0.08,
+      "boost_sound": 0.05,
+      "boost_obstacle": 0.02,
+      "speed_slow_threshold": 0.35,
+      "speed_fast_threshold": 0.75
+    },
+    "emotion": {
+      "led_enabled": false,
+      "led_priority": 40,
+      "led_cooldown_s": 1.0,
+      "led_colors": {
+        "calm": "blue",
+        "alert": "orange",
+        "excited": "green",
+        "tired": "purple"
+      }
+    },
+    "led": {
+      "enabled": true,
+      "priority": [
+        "safety",
+        "navigation",
+        "attention",
+        "emotion"
+      ],
+      "cooldown_s": 0.4,
+      "brightness": 0.7,
+      "default_color": "blue",
+      "safety_color": "red",
+      "safety_mode": "boom",
+      "attention_color": "cyan",
+      "attention_mode": "listen",
+      "nav_mode": "breath",
+      "nav_turn_mode": "listen",
+      "nav_obstacle_mode": "bark",
+      "nav_retreat_mode": "boom",
+      "emotion_mode": "breath",
+      "emotion_color": "blue"
+    },
+    "attention": {
+      "enabled": true,
+      "sound_cooldown_s": 0.5,
+      "head_yaw_max_deg": 60.0,
+      "head_turn_speed": 70,
+      "respect_scanning": true,
+      "scan_block_s": 0.4,
+      "led_priority": 60
+    },
+    "motors": {
+      "min_action_interval_s": 0.2,
+      "head_turn_follow_enabled": true,
+      "head_turn_follow_deg": 12.0,
+      "head_turn_follow_speed": 70,
+      "head_turn_follow_hold_s": 0.4,
+      "head_turn_follow_respect_scanning": true,
+      "head_turn_follow_scan_block_s": 0.4,
+      "head_turn_follow_respect_attention": true,
+      "head_turn_follow_attention_block_s": 0.6
+    },
+    "calibration": {
+      "servo_zero_offsets": {},
+      "auto_apply_servo_offsets": false,
+      "persist_enabled": true,
+      "persist_path": "data/calibration.json",
+      "request": null,
+      "wall_follow_target_distance_cm": 30.0,
+      "corner_seek_turn_deg": 45.0,
+      "landmark_alignment_confidence_min": 0.6,
+      "localization_confidence_bump": 0.1
+    },
+    "safety": {
+      "too_close_cm": 10,
+      "emergency_stop_enabled": false,
+      "emergency_stop_cm": 8,
+      "emergency_stop_action": "lie",
+      "emergency_stop_cooldown_s": 2.0,
+      "emergency_stop_use_hardware_stop": true,
+      "tilt_threshold_deg": 45.0,
+      "tilt_action": "lie",
+      "tilt_cooldown_s": 1.0,
+      "led_priority": 80,
+      "override_priority": [
+        "safety",
+        "watchdog",
+        "navigation",
+        "behavior"
+      ],
+      "override_clear_lower": true
+    },
+    "service_watchdog": {
+      "enabled": true,
+      "module_timeout_s": 6.0,
+      "restart_cooldown_s": 5.0,
+      "max_restarts": 3,
+      "monitor_modules": [],
+      "ignore_modules": [
+        "service_watchdog"
+      ],
+      "restart_on_error": true,
+      "restart_on_stale": true,
+      "status_interval_s": 1.0
+    },
+    "watchdog": {
+      "enabled": true,
+      "sensor_timeout_s": 2.0,
+      "scan_timeout_s": 2.0,
+      "module_timeout_s": 4.0,
+      "monitor_modules": [],
+      "restart_cooldown_s": 5.0,
+      "restart_module_cooldown_s": 10.0,
+      "recovery_mode": "behavior",
+      "recovery_behavior": null,
+      "recovery_action": null,
+      "restart_modules": [],
+      "max_restarts": 0
+    },
+    "balance": {
+      "enabled": false,
+      "update_hz": 10.0,
+      "compensation_scale": 1.0,
+      "max_pitch_deg": 12.0,
+      "max_roll_deg": 12.0,
+      "lpf_alpha": 0.4,
+      "active_when_moving": true,
+      "active_actions": [
+        "forward",
+        "backward",
+        "turn left",
+        "turn right",
+        "trot"
+      ]
+    },
+    "logging": {
+      "enable_console": true,
+      "enable_file": true,
+      "log_dir": "logs",
+      "log_file_name": "houndmind.log",
+      "log_max_entries": 1000,
+      "status_log_enabled": true,
+      "status_log_interval_s": 10,
+      "log_level": "DEBUG",
+      "log_file_max_mb": 10,
+      "log_file_backups": 5,
+      "event_log_enabled": true,
+      "event_log_interval_s": 0.5,
+      "event_log_max_entries": 1000,
+      "event_log_file_enabled": true,
+      "event_log_path": "logs/houndmind_events.jsonl"
+    },
+    "performance": {
+      "scan_interval_min_s": 0.2,
+      "scan_interval_max_s": 2.0,
+      "sensor_poll_hz_max": 20,
+      "health_load_per_core_warn_multiplier": 1.5,
+      "health_temp_warn_c": 70.0,
+      "health_gpu_temp_warn_c": 75.0,
+      "health_mem_used_warn_pct": 85.0,
+      "health_monitor_interval_s": 5.0,
+      "health_scan_interval_multiplier": 2.0,
+      "health_scan_interval_abs_delta": 1.0,
+      "health_vision_frame_interval_multiplier": 2.0,
+      "health_vision_frame_interval_abs_delta": 0.2,
+      "health_actions": [],
+      "safe_mode_enabled": false,
+      "safe_mode_scan_interval_s": 1.2,
+      "safe_mode_turn_speed": 140,
+      "runtime_tick_warn_s": 0.4
+    },
+    "battery": {
+      "enabled": false,
+      "low_voltage_v": 6.8,
+      "low_percent": 0.2,
+      "behavior_override": "rest_behavior"
+    },
+    "quiet_mode": {
+      "enabled": false,
+      "start_hour": 22,
+      "end_hour": 7,
+      "scan_interval_s": 1.2,
+      "behavior_action_cooldown_s": 1.5,
+      "motor_min_action_interval_s": 0.6
+    }
+  }
+}

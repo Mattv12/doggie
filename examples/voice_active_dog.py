@@ -537,8 +537,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # additional 5 degrees back/up: -10 standing/lying, -30 sitting.
                 rest_pitch = -10
                 sit_pitch = -30
-                sit_person_upward_pitch = 10
-                sit_face_upward_pitch = 15
+                downward_pitch_limit = -35
+                sit_person_upward_pitch = 20
+                sit_face_upward_pitch = 25
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
@@ -572,13 +573,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 def limited_head_move(target_yrps, roll_comp=0, pitch_comp=0,
                                       immediately=True, speed=50):
                     # In PiDog coordinates positive target pitch is upward.
-                    # Stand/lie have no extra upward range. Sitting can use
-                    # the 10-degree look-up window after a confirmed person
-                    # lock to find or continue following that person's face.
-                    downward_limit = -5 if getattr(
-                        self, "_face_tracking_locked", False) else 0
+                    # Looking down is safe in every posture. Stand/lie have
+                    # no extra rear/up range; sitting gets a moderate window
+                    # after a confirmed person or face lock.
                     safe_targets = [[target[0], 0,
-                                     max(downward_limit,
+                                     max(downward_pitch_limit,
                                          min(upward_pitch_limit(), target[2]))]
                                     for target in target_yrps]
                     original_head_move(safe_targets,
@@ -589,8 +588,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                           speed=50):
                     safe_pitch = current_safe_pitch()
                     safe_targets = [[target[0], 0,
-                                     max(safe_pitch, min(safe_pitch + upward_pitch_limit(),
-                                                         target[2]))]
+                                     max(safe_pitch + downward_pitch_limit,
+                                         min(safe_pitch + upward_pitch_limit(),
+                                             target[2]))]
                                     for target in target_angles]
                     original_head_move_raw(safe_targets, immediately=immediately,
                                           speed=speed)
@@ -609,9 +609,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: seated person search=10 degrees, "
-                      "seated face lock=15 degrees; stand/lie stay forward; "
-                      "rest=-10, sit=-30")
+                print("head safety limiter enabled: down=35 degrees in every posture; "
+                      "seated person up=20, seated face up=25 degrees; "
+                      "stand/lie stay forward; rest=-10, sit=-30")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
@@ -1331,8 +1331,10 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 self._face_tracking_locked = face_locked
                 self._tracked_at = time.monotonic()
                 self._search_yaw = yaw
-                ex = (x + w / 2.0) - 320
-                ey = (y + h / 2.0) - 240
+                frame_center_x = frame.shape[1] / 2.0
+                frame_center_y = frame.shape[0] / 2.0
+                ex = (x + w / 2.0) - frame_center_x
+                ey = (y + h / 2.0) - frame_center_y
                 # Rate-limit each correction and use lower servo speed. This
                 # turns the former snap-to-box behavior into a smooth chase.
                 if abs(ex) > 15:
@@ -1340,13 +1342,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     yaw = max(-80, min(80, yaw))
                 if abs(ey) > 25:
                     pitch += max(-0.75, min(0.75, -ey * 0.015))
-                    upward_limit = (15 if face_locked
+                    upward_limit = (25 if face_locked
                                     and self.action_flow.posture == Posetures.SIT
-                                    else 10 if person_locked
+                                    else 20 if person_locked
                                     and self.action_flow.posture == Posetures.SIT
                                     else 0)
-                    pitch = max(-5 if face_locked else 0,
-                                min(upward_limit, pitch))
+                    pitch = max(-35, min(upward_limit, pitch))
                 self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
                                    immediately=True, speed=42)
                 time.sleep(0.08)

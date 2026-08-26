@@ -194,6 +194,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "connection status",
         "what network",
         "which network",
+        "what is your ip address",
+        "what's your ip address",
+        "what is your ip",
+        "what's your ip",
+        "tell me your ip address",
         "battery status",
         "battery level",
         "how much battery",
@@ -2083,7 +2088,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
 
         if result is not None and result.returncode == 0:
             self._wifi_scan_choices = []
-            return f"Connected to {selected['spoken']}.\nACTIONS:"
+            network = self._get_network_status()
+            if network.get("ip"):
+                return (
+                    f"Connected to {selected['spoken']}. My IP address is "
+                    f"{network['ip']}.\nACTIONS:"
+                )
+            return f"Connected to {selected['spoken']}, but I could not read my IP address yet.\nACTIONS:"
 
         if previous:
             self.tts.say(f"Connection failed. Reconnecting to {previous_spoken}.")
@@ -2142,6 +2153,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             parts.append(f"Doggie is connected to {network_name}, but has no internet access.")
         else:
             parts.append("Doggie is offline.")
+
+        if network["connected"] == "yes" and network.get("ip"):
+            parts.append(f"Doggie's IP address is {network['ip']}.")
 
         volts, pct = self.read_battery()
         if volts is not None and pct is not None:

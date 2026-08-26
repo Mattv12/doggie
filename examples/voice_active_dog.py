@@ -200,6 +200,28 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "status report",
         "doggie status",
     )
+    WIFI_SCAN_PATTERNS = (
+        "scan wifi",
+        "scan wi fi",
+        "scan for wifi",
+        "scan for wi fi",
+        "list wifi",
+        "list wi fi",
+        "list hotspots",
+        "list hot spots",
+        "available wifi",
+        "available wi fi",
+        "available hotspots",
+        "available hot spots",
+        "find wifi",
+        "find wi fi",
+        "find hotspots",
+        "find hot spots",
+        "what wifi networks",
+        "what wi fi networks",
+        "what hotspots",
+        "what hot spots",
+    )
     # The web panel deliberately exposes only stationary, low-risk actions.
     # Any walking or free-form AI command still has to come through voice.
     WEB_COMMANDS = {
@@ -348,6 +370,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._wake_prefix_until = 0.0
         self._speech_active = False
         self._queued_follow_up = None
+        self._wifi_scan_choices = []
+        self._wifi_scan_at = 0.0
         self._shutdown_status = {"state": "idle", "detail": ""}
         self.add_trigger(self.trigger_web_command)
         self.add_trigger(self.trigger_follow_up)
@@ -1590,6 +1614,12 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if not self._voice_and_face_authorized(text):
             return "I heard you, but I need my owner's voice before I can follow commands."
         self._last_user_text = text
+        if self._is_wifi_scan_query(text):
+            return self._build_wifi_scan_reply()
+        if self._wifi_scan_choices and time.monotonic() - self._wifi_scan_at < 90:
+            selection_reply = self._handle_wifi_selection(text)
+            if selection_reply is not None:
+                return selection_reply
         direct_action = self._direct_action_for_text(text)
         if direct_action is not None:
             return f"\nACTIONS: {direct_action}"
@@ -1723,6 +1753,11 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return any(pattern in normalized for pattern in cls.STATUS_REPORT_PATTERNS)
 
     @classmethod
+    def _is_wifi_scan_query(cls, text: str) -> bool:
+        normalized = cls._normalize_phrase(text)
+        return any(pattern in normalized for pattern in cls.WIFI_SCAN_PATTERNS)
+
+    @classmethod
     def _direct_action_for_text(cls, text: str) -> str | None:
         normalized = cls._normalize_phrase(text)
         padded = f" {normalized} "
@@ -1842,6 +1877,136 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             }
         except (OSError, subprocess.SubprocessError):
             return {"connected": "unknown", "internet": None, "ssid": None, "signal": None, "ip": None}
+
+    @staticmethod
+    def _saved_wifi_profiles() -> dict[str, str]:
+        """Return SSID-to-UUID mappings without reading stored secrets."""
+        profiles = {}
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "UUID,TYPE", "connection", "show"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            for line in result.stdout.splitlines():
+                uuid, _, connection_type = line.partition(":")
+                if connection_type != "802-11-wireless":
+                    continue
+                ssid_result = subprocess.run(
+                    ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "uuid", uuid],
+                    capture_output=True, text=True, timeout=3, check=False,
+                )
+                ssid = ssid_result.stdout.strip()
+                if ssid:
+                    profiles.setdefault(ssid, uuid)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return profiles
+
+    def _scan_wifi_choices(self) -> list[dict[str, object]]:
+        """Return at most five strongest unique hotspots with safe metadata."""
+        saved = self._saved_wifi_profiles()
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "--escape", "no", "-f", "SSID,SIGNAL,SECURITY",
+                 "device", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"],
+                capture_output=True, text=True, timeout=12, check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+
+        strongest = {}
+        for line in result.stdout.splitlines():
+            parts = line.rsplit(":", 2)
+            if len(parts) != 3:
+                continue
+            ssid, signal_text, security = parts
+            if not ssid.strip():
+                continue
+            try:
+                signal = int(signal_text)
+            except ValueError:
+                continue
+            previous = strongest.get(ssid)
+            if previous is None or signal > previous["signal"]:
+                is_open = security.strip() in {"", "--", "NONE"}
+                strongest[ssid] = {
+                    "ssid": ssid,
+                    "spoken": self._safe_spoken_value(ssid) or "unnamed network",
+                    "signal": signal,
+                    "security": security.strip(),
+                    "saved_uuid": saved.get(ssid),
+                    "connectable": bool(saved.get(ssid) or is_open),
+                    "open": is_open,
+                }
+        return sorted(strongest.values(), key=lambda item: item["signal"], reverse=True)[:5]
+
+    def _build_wifi_scan_reply(self) -> str:
+        choices = self._scan_wifi_choices()
+        self._wifi_scan_choices = choices
+        self._wifi_scan_at = time.monotonic()
+        if not choices:
+            return "I could not find any Wi-Fi hotspots right now. Would you like me to scan again?\nACTIONS:"
+
+        descriptions = []
+        for number, choice in enumerate(choices, 1):
+            if choice["saved_uuid"]:
+                availability = "saved and ready"
+            elif choice["open"]:
+                availability = "open and ready"
+            else:
+                availability = "password not saved"
+            descriptions.append(
+                f"Number {number}, {choice['spoken']}, {choice['signal']} percent, {availability}."
+            )
+        return (
+            "Here are the strongest hotspots. " + " ".join(descriptions)
+            + " Which hotspot should I connect to?\nACTIONS:"
+        )
+
+    def _handle_wifi_selection(self, text: str) -> str | None:
+        """Resolve a numbered/named follow-up and connect only when authorized."""
+        normalized = self._normalize_phrase(text)
+        if any(phrase in normalized for phrase in ("cancel", "never mind", "nevermind", "stay connected")):
+            self._wifi_scan_choices = []
+            return "Okay, I will keep my current Wi-Fi connection.\nACTIONS:"
+
+        number_words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+        selected = None
+        digit_match = re.search(r"\b([1-5])\b", normalized)
+        if digit_match:
+            index = int(digit_match.group(1)) - 1
+            if index < len(self._wifi_scan_choices):
+                selected = self._wifi_scan_choices[index]
+        if selected is None:
+            for word, number in number_words.items():
+                if re.search(rf"\b{word}\b", normalized) and number <= len(self._wifi_scan_choices):
+                    selected = self._wifi_scan_choices[number - 1]
+                    break
+        if selected is None:
+            for choice in self._wifi_scan_choices:
+                if self._normalize_phrase(str(choice["ssid"])) in normalized:
+                    selected = choice
+                    break
+        if selected is None:
+            return "I did not recognize that hotspot. Please say its number or name?\nACTIONS:"
+        if not selected["connectable"]:
+            return (
+                f"I can see {selected['spoken']}, but I do not have its password saved. "
+                "Please choose a network marked ready?\nACTIONS:"
+            )
+
+        try:
+            if selected["saved_uuid"]:
+                command = ["nmcli", "connection", "up", "uuid", str(selected["saved_uuid"]), "ifname", "wlan0"]
+            else:
+                command = ["nmcli", "device", "wifi", "connect", str(selected["ssid"]), "ifname", "wlan0"]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=25, check=False)
+        except (OSError, subprocess.SubprocessError):
+            result = None
+        if result is None or result.returncode != 0:
+            return f"I could not connect to {selected['spoken']}. Would you like another hotspot?\nACTIONS:"
+        self._wifi_scan_choices = []
+        return f"Connected to {selected['spoken']}.\nACTIONS:"
 
     def _build_status_report_reply(self) -> str:
         network = self._get_network_status()

@@ -394,7 +394,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # what was heard on a normal line so it is readable in the journal.
         import types
         def _heard_wake_word_substring(stt_self, print_callback=None):
-            result = stt_self.listen(stream=False)
+            try:
+                result = stt_self.listen(stream=False)
+            except _sd.PortAudioError as exc:
+                # Keep a temporary device-busy race from killing the wake
+                # thread. It will retry after the one-shot listener exits.
+                print(f"wake microphone temporarily unavailable: {exc}")
+                _time.sleep(0.25)
+                return False
             if result is None:
                 return False
             self._remember_sound_direction()
@@ -423,6 +430,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         import queue as _queue
         import time as _time
         import sounddevice as _sd
+        self._sounddevice = _sd
 
         def _remember_audio(chunks, sample_rate):
             self._last_stt_audio = b"".join(chunks)
@@ -1617,7 +1625,21 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             # still uses the normal microphone, owner verification, silence
             # endpoint, hard timeout, conversation processing, and TTS path.
             print("web listen: one-shot microphone window opened")
-            heard = self.listen()
+            self.stt.stop_listening()
+            wake_thread = getattr(self.stt, "wake_word_thread", None)
+            if (wake_thread is not None
+                    and wake_thread is not threading.current_thread()):
+                wake_thread.join(timeout=2.0)
+            if wake_thread is not None and wake_thread.is_alive():
+                print("web listen: wake listener did not release microphone")
+                return "My microphone is busy. Please press listen again.\nACTIONS:"
+            try:
+                heard = self.listen()
+            except self._sounddevice.PortAudioError as exc:
+                print(f"web listen: microphone unavailable: {exc}")
+                self._cmd_listening = False
+                self.dog.rgb_strip.close()
+                return "My microphone is busy. Please press listen again.\nACTIONS:"
             if not heard:
                 print("web listen: timed out without a request")
                 return "I did not hear a request.\nACTIONS:"

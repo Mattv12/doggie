@@ -221,6 +221,14 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "what wi fi networks",
         "what hotspots",
         "what hot spots",
+        "what networks are available",
+        "which networks are available",
+        "show available networks",
+        "can you connect to any other networks",
+        "can you connect to another network",
+        "connect to another network",
+        "other wifi networks",
+        "other wi fi networks",
     )
     # The web panel deliberately exposes only stationary, low-risk actions.
     # Any walking or free-form AI command still has to come through voice.
@@ -1974,6 +1982,22 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 }
         return sorted(strongest.values(), key=lambda item: item["signal"], reverse=True)[:5]
 
+    @staticmethod
+    def _active_wifi_profile() -> dict[str, str] | None:
+        """Return the active wlan0 connection without exposing credentials."""
+        try:
+            result = subprocess.run(
+                ["nmcli", "-g", "GENERAL.CONNECTION,GENERAL.CON-UUID", "device", "show", "wlan0"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        values = [line.strip() for line in result.stdout.splitlines()]
+        if result.returncode != 0 or len(values) < 2 or not values[1] or values[1] == "--":
+            return None
+        name = values[0] if values[0] and values[0] != "--" else "current network"
+        return {"name": name, "uuid": values[1]}
+
     def _build_wifi_scan_reply(self) -> str:
         choices = self._scan_wifi_choices()
         self._wifi_scan_choices = choices
@@ -2029,18 +2053,57 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 "Please choose a network marked ready?\nACTIONS:"
             )
 
+        previous = self._active_wifi_profile()
+        target_uuid = str(selected["saved_uuid"] or "")
+        if previous and (
+            (target_uuid and target_uuid == previous["uuid"])
+            or self._normalize_phrase(str(selected["ssid"])) == self._normalize_phrase(previous["name"])
+        ):
+            self._wifi_scan_choices = []
+            return f"I am already connected to {selected['spoken']}.\nACTIONS:"
+
+        if selected["saved_uuid"]:
+            command = ["nmcli", "connection", "up", "uuid", target_uuid, "ifname", "wlan0"]
+        else:
+            command = ["nmcli", "device", "wifi", "connect", str(selected["ssid"]), "ifname", "wlan0"]
+
+        previous_spoken = self._safe_spoken_value(previous["name"]) if previous else "my current network"
         try:
-            if selected["saved_uuid"]:
-                command = ["nmcli", "connection", "up", "uuid", str(selected["saved_uuid"]), "ifname", "wlan0"]
-            else:
-                command = ["nmcli", "device", "wifi", "connect", str(selected["ssid"]), "ifname", "wlan0"]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=25, check=False)
+            if previous:
+                self.tts.say(f"Disconnecting from {previous_spoken}.")
+                subprocess.run(
+                    ["nmcli", "connection", "down", "uuid", previous["uuid"]],
+                    capture_output=True, text=True, timeout=12, check=False,
+                )
+            self.tts.say(f"Connecting to {selected['spoken']}.")
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
         except (OSError, subprocess.SubprocessError):
             result = None
-        if result is None or result.returncode != 0:
-            return f"I could not connect to {selected['spoken']}. Would you like another hotspot?\nACTIONS:"
-        self._wifi_scan_choices = []
-        return f"Connected to {selected['spoken']}.\nACTIONS:"
+
+        if result is not None and result.returncode == 0:
+            self._wifi_scan_choices = []
+            return f"Connected to {selected['spoken']}.\nACTIONS:"
+
+        if previous:
+            self.tts.say(f"Connection failed. Reconnecting to {previous_spoken}.")
+            try:
+                restored = subprocess.run(
+                    ["nmcli", "connection", "up", "uuid", previous["uuid"], "ifname", "wlan0"],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                restored = None
+            if restored is not None and restored.returncode == 0:
+                self._wifi_scan_choices = []
+                return (
+                    f"I could not connect to {selected['spoken']}, so I reconnected to "
+                    f"{previous_spoken}.\nACTIONS:"
+                )
+            return (
+                f"I could not connect to {selected['spoken']} or restore {previous_spoken}. "
+                "Please check my network locally.\nACTIONS:"
+            )
+        return f"I could not connect to {selected['spoken']}. Would you like another hotspot?\nACTIONS:"
 
     def _build_status_report_reply(self) -> str:
         network = self._get_network_status()

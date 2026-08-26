@@ -2243,6 +2243,38 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     self._send(200, page, "text/html; charset=utf-8")
                     return
                 page = b'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doggie Safe Controller</title><style>*{box-sizing:border-box}body{margin:0;background:#07101b;color:#eef;font:16px system-ui;overflow:hidden}.camera{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:.45}.ui{position:relative;min-height:100vh;padding:1rem;display:flex;align-items:end;justify-content:space-between;background:linear-gradient(transparent 35%,#06101ddd)}h1{position:absolute;top:.5rem;left:1rem;font-size:1rem}.pad{display:grid;grid-template:repeat(3,58px)/repeat(3,58px);gap:5px}.pad button{font-size:20px}.up{grid-column:2}.left{grid-column:1;grid-row:2}.mid{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}button{border:1px solid #7dd3fc;border-radius:16px;background:#0e2947e8;color:#fff;touch-action:manipulation}button:active{background:#0284c7}button:disabled{opacity:.35}.rightside{display:flex;align-items:end;gap:1rem}.actions{display:grid;grid-template-columns:repeat(2,76px);gap:6px}.actions button{height:58px;font-size:12px;font-weight:700}.actions .listen{grid-column:1/-1;background:#075985}.label{text-align:center;font-size:11px;margin:0 0 5px}.note{position:absolute;top:2.5rem;left:1rem;right:1rem;font-size:12px;max-width:42rem}@media(max-width:620px){.ui{padding:.7rem}.pad{grid-template:repeat(3,50px)/repeat(3,50px)}.actions{grid-template-columns:repeat(2,68px)}.actions button{height:50px}.rightside{gap:.5rem}}</style><img class="camera" id="camera" alt="Doggie live camera"><main class="ui"><h1>Doggie Safe Controller</h1><p class="note">Uses Doggie's normal command path. Walking and unrestricted head movement stay locked for safety.</p><section><p class="label">BODY</p><div class="pad"><button class="up" data-command="stand">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="stop">&#9632;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="lie down">&#9660;</button></div></section><section class="rightside"><div><p class="label">HEAD (SAFE)</p><div class="pad"><button class="up" data-command="nod">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="shake head">&#9679;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="head down">&#9660;</button></div></div><div><p class="label">ACTIONS</p><div class="actions"><button data-command="sit">SIT</button><button data-command="stand">STAND</button><button data-command="bark">BARK</button><button data-command="lie down">LAY DOWN</button><button class="listen" data-command="listen">LISTEN</button></div></div></section></main><p id="result" style="position:fixed;bottom:.5rem;left:50%;transform:translateX(-50%);margin:0"></p><script>document.getElementById('camera').src='http://'+window.location.hostname+':8080/stream';async function send(c){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:c})});const d=await r.json();document.getElementById('result').textContent=d.status||d.error||'Request failed'}document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>send(b.dataset.command))</script>'''
+                responsive_css = b'''<style>
+body{overflow:auto;min-height:100svh}
+.ui{min-height:100svh;height:auto;padding-bottom:max(1rem,env(safe-area-inset-bottom));gap:1rem}
+button{min-width:48px;min-height:48px}
+@media(max-width:760px){
+  .ui{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-end;
+      gap:.65rem;padding:5.2rem .75rem max(3.25rem,calc(env(safe-area-inset-bottom) + 2.5rem))}
+  .ui>section:first-of-type{align-self:center}
+  .rightside{display:grid;grid-template-columns:minmax(150px,1fr) minmax(142px,1fr);
+             align-items:end;justify-items:center;gap:.75rem;width:100%}
+  .pad{grid-template:repeat(3,48px)/repeat(3,48px);gap:5px}
+  .actions{grid-template-columns:repeat(2,minmax(64px,1fr));width:100%;max-width:180px}
+  .actions button{height:48px;min-width:0}
+  .label{margin-bottom:4px}
+  .note{top:2.2rem;font-size:11px;line-height:1.25}
+}
+@media(max-width:350px){
+  .rightside{grid-template-columns:1fr;gap:.5rem}
+  .ui{padding-top:5.6rem}
+}
+@media(max-height:560px) and (orientation:landscape){
+  .ui{display:grid;grid-template-columns:repeat(3,max-content);align-items:end;
+      justify-content:space-around;padding-top:4.2rem;overflow:auto}
+  .ui>section:first-of-type{align-self:end}
+  .rightside{display:contents}
+  .pad{grid-template:repeat(3,44px)/repeat(3,44px)}
+  .actions button{height:44px;min-height:44px}
+}
+</style>'''
+                page = page.replace(b"</head>", responsive_css + b"</head>", 1)
+                if responsive_css not in page:
+                    page = page.replace(b"</style>", b"</style>" + responsive_css, 1)
                 self._send(200, page, "text/html; charset=utf-8")
 
             def do_POST(self) -> None:

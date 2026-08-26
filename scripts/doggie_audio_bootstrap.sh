@@ -18,8 +18,8 @@ until pactl info >/dev/null 2>&1; do
   sleep 1
 done
 
-# Start voice in body-speaker/USB-microphone mode. This removes a stale
-# combine sink left by a previous Bluetooth session, which could otherwise
-# duplicate the opening TTS audio on the body speaker.
+# Start every boot in body-speaker/USB-microphone mode. Bluetooth becomes the
+# output only after an explicit successful headset enable; outputs are never
+# mirrored. This also removes a stale mirror from older routing versions.
 /usr/local/sbin/doggie-headset-audio disable
 sleep 1

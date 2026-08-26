@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Route Doggie voice through a paired Bluetooth headset without changing
-# any PiDog movement behavior.  Run as root; it controls matt's PulseAudio
-# session using its authentication cookie.
+# Select either Doggie's body audio or a paired Bluetooth headset without
+# changing any PiDog movement behavior. Never mirror the two outputs: the
+# Voice HAT and Bluetooth clocks/sample rates are not safe to combine.
+# Run as root; this controls matt's PulseAudio session using its cookie.
 set -euo pipefail
 
 readonly AUDIO_USER="${DOGGIE_AUDIO_USER:-matt}"
 readonly AUDIO_UID="$(id -u "$AUDIO_USER")"
 readonly PULSE_RUNTIME="/run/user/${AUDIO_UID}"
 readonly PULSE_COOKIE="/home/${AUDIO_USER}/.config/pulse/cookie"
-readonly MIRROR_SINK="doggie_mirror"
 
 export XDG_RUNTIME_DIR="$PULSE_RUNTIME"
 export PULSE_SERVER="unix:${PULSE_RUNTIME}/pulse/native"
@@ -54,15 +54,38 @@ source_for_card() {
     '$2 ~ "^" input_prefix || $2 ~ "^" source_prefix { print $2; exit }'
 }
 
-remove_mirror() {
+remove_legacy_mirror() {
+  # Clean up modules created by versions of this script before 2026-08-25.
   pactl_cmd list short modules | awk '$2 == "module-combine-sink" && $0 ~ /sink_name=doggie_mirror/ { print $1 }' |
     while read -r id; do pactl_cmd unload-module "$id"; done
 }
 
+body_sink() {
+  pactl_cmd list short sinks | awk '$2 ~ /^alsa_output\./ { print $2; exit }'
+}
+
+usb_source() {
+  pactl_cmd list short sources | awk '$2 ~ /^alsa_input\.usb-/ { print $2; exit }'
+}
+
+select_body_audio() {
+  local sink source
+  remove_legacy_mirror
+  sink="$(body_sink)"
+  source="$(usb_source)"
+  [[ -n "$sink" ]] || { echo "Body speaker sink was not found." >&2; return 1; }
+  pactl_cmd set-default-sink "$sink"
+  [[ -n "$source" ]] && pactl_cmd set-default-source "$source"
+}
+
 enable() {
   local mac="${1:?Bluetooth MAC address is required}"
-  local card body_sink bt_sink bt_source profile
+  local card bt_sink bt_source profile
   require_pulse
+
+  # Establish a safe fallback before touching Bluetooth. If connection or
+  # profile negotiation fails, Doggie continues using its body speaker.
+  select_body_audio
 
   bluetoothctl connect "$mac" >/dev/null || true
   sleep 2
@@ -92,33 +115,23 @@ enable() {
     exit 1
   }
 
-  # Choosing the ALSA sink explicitly avoids the Bluetooth profile switch
-  # temporarily becoming PulseAudio's default sink.
-  body_sink="$(pactl_cmd list short sinks | awk '$2 ~ /^alsa_output\./ { print $2; exit }')"
-  [[ -n "$body_sink" ]] || { echo "Body speaker sink was not found." >&2; exit 1; }
-
-  remove_mirror
-  pactl_cmd load-module module-combine-sink sink_name="$MIRROR_SINK" \
-    slaves="${body_sink},${bt_sink}" adjust_time=0 >/dev/null
-  pactl_cmd set-default-sink "$MIRROR_SINK"
+  # Headset mode is exclusive. Combining this telephony-rate Bluetooth sink
+  # with the Voice HAT caused clock drift, resampling, and garbled audio.
+  pactl_cmd set-default-sink "$bt_sink"
   pactl_cmd set-default-source "$bt_source"
-  echo "Headset enabled: mic=${bt_source}; speech=${body_sink} + ${bt_sink}"
+  echo "Headset enabled: mic=${bt_source}; speech=${bt_sink}"
 }
 
 status() {
   require_pulse
   pactl_cmd info | grep -E '^Default (Sink|Source):'
+  pactl_cmd list short sinks
   pactl_cmd list short cards | grep bluez_card || true
 }
 
 disable() {
   require_pulse
-  local body_sink usb_source
-  remove_mirror
-  body_sink="$(pactl_cmd list short sinks | awk '$2 ~ /^alsa_output\./ { print $2; exit }')"
-  usb_source="$(pactl_cmd list short sources | awk '$2 ~ /^alsa_input\.usb-/ { print $2; exit }')"
-  [[ -n "$body_sink" ]] && pactl_cmd set-default-sink "$body_sink"
-  [[ -n "$usb_source" ]] && pactl_cmd set-default-source "$usb_source"
+  select_body_audio
   echo "Headset routing disabled; restored body speaker and USB microphone."
 }
 

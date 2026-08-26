@@ -7,7 +7,6 @@
 - face:  simple owner recognition (enroll with "learn my face"); template
          matching on equalized 100x100 crops -- good enough for
          owner-vs-stranger in consistent garage lighting
-- fetch: finds and walks to the red ball using HSV color tracking
 
 House rule (same as balance/watch): exactly one mode owns the servos at a
 time, enforced by guarded_run in voice_active_dog.py.
@@ -16,29 +15,35 @@ import os
 import random
 import time
 import threading
+from pathlib import Path
 
 from pidog.action_flow import ActionStatus, Posetures
 from pidog.pidog import Pidog
 from pidog.walk import Walk
 
 FACES_DIR = "/home/matt/.pidog_faces/owner"
+OWNER_EMBEDDINGS = "/home/matt/.pidog_faces/owner_embeddings.npy"
 GUARD_DIR = "/home/matt/pidog/guard_photos"
+VISITOR_FACES_DIR = "/home/matt/.pidog_faces/visitors"
 OWNER_NAME = "Matt"
+YUNET_MODEL = "/home/matt/.local/share/doggie/models/face_detection_yunet.onnx"
+SFACE_MODEL = "/home/matt/.local/share/doggie/models/face_recognition_sface.onnx"
 
 
 class AbilitiesMixin:
 
     GUARD_SAFE = ("bark", "bark harder", "wag tail")  # guard's own reactions
     GUARD_ALERT_COOLDOWN = 12.0
+    VISITOR_RETENTION_SECONDS = 60 * 24 * 60 * 60
+    VISITOR_FACE_SAVE_COOLDOWN = 20.0
 
     # ---------- shared mode plumbing ----------
     def _setup_abilities(self):
         ops = self.action_flow.OPERATIONS  # instance copy made in _setup_balance
         ops["guard on"] = {"function": lambda flow: self.start_guard()}
         ops["guard off"] = {"function": lambda flow: self.stop_guard()}
-        ops["fetch"] = {"function": lambda flow: self.start_fetch()}
-        ops["stop fetch"] = {"function": lambda flow: self.stop_fetch()}
         ops["learn my face"] = {"function": lambda flow: self.learn_face()}
+        ops["learn my voice"] = {"function": lambda flow: self.learn_voice()}
         # sit-only upward gaze (no "poseture" key: must not force a stand)
         ops["look up"] = {"function": lambda flow: self.look_up()}
         # smoother turns: stock 'turn left/right' walks a wide forward arc,
@@ -60,15 +65,17 @@ class AbilitiesMixin:
                               "poseture": Posetures.STAND}
         self.guard_on = False
         self.guard_thread = None
-        self.fetch_on = False
-        self.fetch_thread = None
         self._owner_samples = None
+        self._owner_embeddings = None
+        self._face_models_cache = None
+        self._last_visitor_face_at = 0.0
+        self._last_owner_face_at = 0.0
         self._start_head_life()
 
     def any_mode_on(self):
         return (self.balance_on or self.watch_on
                 or getattr(self, "guard_on", False)
-                or getattr(self, "fetch_on", False))
+                )
 
     def stop_all_modes(self, keep=None):
         if keep != "balance":
@@ -77,8 +84,6 @@ class AbilitiesMixin:
             self.stop_watch()
         if keep != "guard":
             self.stop_guard()
-        if keep != "fetch":
-            self.stop_fetch()
 
     def _grab_gray(self, cv2):
         frame = self.picam2.capture_array()
@@ -95,6 +100,33 @@ class AbilitiesMixin:
             self._cascade = cv2.CascadeClassifier(
                 cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         return self._cascade
+
+    def _face_models(self, cv2):
+        if self._face_models_cache is not None:
+            return self._face_models_cache
+        if not (os.path.exists(YUNET_MODEL) and os.path.exists(SFACE_MODEL)):
+            self._face_models_cache = False
+            return False
+        try:
+            self._face_models_cache = (
+                cv2.FaceDetectorYN.create(YUNET_MODEL, "", (320, 320), 0.78, 0.3, 100),
+                cv2.FaceRecognizerSF.create(SFACE_MODEL, ""),
+            )
+        except Exception as exc:
+            print(f"modern face models unavailable: {exc}")
+            self._face_models_cache = False
+        return self._face_models_cache
+
+    def detect_faces(self, cv2, bgr, gray=None):
+        models = self._face_models(cv2)
+        if models:
+            detector, _ = models
+            detector.setInputSize((bgr.shape[1], bgr.shape[0]))
+            _, faces = detector.detect(bgr)
+            return [] if faces is None else list(faces)
+        if gray is None:
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        return list(self._face_cascade(cv2).detectMultiScale(gray, 1.2, 4, minSize=(60, 60)))
 
     # ---------- pivot turns ----------
     @staticmethod
@@ -125,10 +157,12 @@ class AbilitiesMixin:
     HEAD_TILT_CHANCE = 0.2        # curious head-tilt probability per glance
     HEAD_TILT = (8, 16)           # deg tilt range
     HEAD_IDLE_SPEED = 18
-    HEAD_AROUSED_GAP = (0.4, 1.2)
-    HEAD_AROUSED_YAW = 26         # deg around the last heard direction
-    HEAD_AROUSED_PITCH = 12
-    HEAD_AROUSED_SPEED = 78
+    HEAD_AROUSED_GAP = (1.4, 2.4)
+    HEAD_AROUSED_YAW = 8          # subtle motion around the heard direction
+    HEAD_AROUSED_PITCH = 3
+    # Wake-word motion must stay quiet enough for the microphone to hear the
+    # command that immediately follows it.
+    HEAD_AROUSED_SPEED = 18
     AROUSED_SOUND_COOLDOWN = 0.8  # min s between sound turns while aroused
     AROUSED_SOUND_DEADBAND = 10   # ignore sounds near current aim
     VISION_SURVEY_RANGE = (-10, 10)
@@ -179,7 +213,7 @@ class AbilitiesMixin:
                     self._sound_yaw = yaw
                     self.dog.head_move([[yaw, 0, 0]],
                                        pitch_comp=self.action_flow.head_pitch_init,
-                                       immediately=True, speed=80)
+                                       immediately=True, speed=30)
                     self._head_yaw = yaw
             except Exception as e:
                 print(f"head_excite error: {e}")
@@ -236,6 +270,7 @@ class AbilitiesMixin:
                 now = time.time()
                 if (self.any_mode_on()
                         or getattr(self, "_cmd_listening", False)
+                        or getattr(self, "_speech_active", False)
                         or not self.dog.is_head_done()):
                     continue
                 aroused = now < self._head_arousal_until
@@ -318,21 +353,132 @@ class AbilitiesMixin:
         return samples
 
     def _crop_face(self, cv2, gray, face):
-        x, y, w, h = face
-        crop = gray[y:y + h, x:x + w]
+        x, y, w, h = (int(v) for v in face[:4])
+        if gray is None or getattr(gray, "size", 0) == 0:
+            return None
+        # YuNet can report a box that slightly extends past the frame edge.
+        # Clamp it before slicing so OpenCV never receives an empty crop.
+        x = max(0, min(x, gray.shape[1]))
+        y = max(0, min(y, gray.shape[0]))
+        right = max(x, min(x + w, gray.shape[1]))
+        bottom = max(y, min(y + h, gray.shape[0]))
+        if right <= x or bottom <= y:
+            return None
+        crop = gray[y:bottom, x:right]
+        if crop.size == 0:
+            return None
         crop = cv2.resize(crop, (100, 100))
         return cv2.equalizeHist(crop)
 
-    def _is_owner(self, cv2, gray, face):
+    def _load_owner_embeddings(self):
+        if self._owner_embeddings is None:
+            try:
+                import numpy as np
+                self._owner_embeddings = np.load(OWNER_EMBEDDINGS)
+            except (OSError, ValueError):
+                self._owner_embeddings = []
+        return self._owner_embeddings
+
+    def _face_embedding(self, cv2, bgr, face):
+        models = self._face_models(cv2)
+        if not models:
+            return None
+        _, recognizer = models
+        try:
+            aligned = recognizer.alignCrop(bgr, face)
+            return recognizer.feature(aligned)
+        except Exception as exc:
+            print(f"face embedding unavailable: {exc}")
+            return None
+
+    def _is_owner(self, cv2, gray, face, bgr=None):
+        if bgr is not None:
+            embedding = self._face_embedding(cv2, bgr, face)
+            samples = self._load_owner_embeddings()
+            if embedding is not None and len(samples):
+                # SFace cosine matching is robust to pose/lighting unlike the
+                # old equalized-pixel template comparison.
+                _, recognizer = self._face_models(cv2)
+                scores = [float(recognizer.match(
+                    embedding, sample, cv2.FaceRecognizerSF_FR_COSINE))
+                          for sample in samples]
+                return max(scores, default=0.0) >= 0.45
         samples = self._load_owner(cv2)
         if not samples:
             return False
         crop = self._crop_face(cv2, gray, face)
+        if crop is None:
+            return False
         best = 0.0
         for s in samples:
             score = float(cv2.matchTemplate(crop, s, cv2.TM_CCOEFF_NORMED)[0][0])
             best = max(best, score)
         return best > 0.55
+
+    def owner_face_status(self):
+        """Return owner/non-owner when a clear face is visible, else None."""
+        if getattr(self, "picam2", None) is None:
+            return None
+        try:
+            import cv2
+            if not self._load_owner(cv2):
+                return None  # face enrollment has not happened yet
+            bgr, gray = self._grab_gray(cv2)
+            faces = self.detect_faces(cv2, bgr, gray)
+            if len(faces) == 0:
+                return None  # camera cannot help; fall back to voice
+            return any(self._is_owner(cv2, gray, face, bgr) for face in faces)
+        except Exception as exc:
+            print(f"owner face check unavailable: {exc}")
+            return None
+
+    def remember_visible_face(self, cv2, bgr, gray, face):
+        """Persist a visitor crop locally, or refresh the owner's memory."""
+        if self._is_owner(cv2, gray, face, bgr):
+            now = time.time()
+            if (hasattr(self, "memory")
+                    and now - getattr(self, "_last_owner_face_at", 0.0)
+                    >= self.VISITOR_FACE_SAVE_COOLDOWN):
+                self.memory.note_owner_seen(name=OWNER_NAME)
+                self._last_owner_face_at = now
+            return "owner"
+        now = time.time()
+        if now - getattr(self, "_last_visitor_face_at", 0.0) < self.VISITOR_FACE_SAVE_COOLDOWN:
+            return "visitor"
+        os.makedirs(VISITOR_FACES_DIR, exist_ok=True)
+        crop = self._crop_face(cv2, gray, face)
+        if crop is None:
+            print("face memory: ignored invalid face crop")
+            return "unavailable"
+        path = os.path.join(VISITOR_FACES_DIR,
+                            f"seen_{time.strftime('%Y-%m-%d_%H%M%S')}.png")
+        cv2.imwrite(path, crop)
+        self._last_visitor_face_at = now
+        self._purge_expired_visitor_data()
+        print(f"face memory: saved visitor face {path}")
+        return "visitor"
+
+    def _purge_expired_visitor_data(self):
+        """Keep surveillance evidence local and remove it after 60 days.
+
+        Owner enrollment samples live in ``FACES_DIR`` and are deliberately
+        excluded, so they persist until the owner explicitly removes them.
+        """
+        cutoff = time.time() - self.VISITOR_RETENTION_SECONDS
+        removed = 0
+        for directory in (GUARD_DIR, VISITOR_FACES_DIR):
+            path = Path(directory)
+            if not path.is_dir():
+                continue
+            for item in path.iterdir():
+                try:
+                    if item.is_file() and not item.is_symlink() and item.stat().st_mtime < cutoff:
+                        item.unlink()
+                        removed += 1
+                except OSError as exc:
+                    print(f"retention cleanup warning for {item}: {exc}")
+        if removed:
+            print(f"retention cleanup: removed {removed} expired visitor item(s)")
 
     def learn_face(self):
         import cv2
@@ -341,20 +487,30 @@ class AbilitiesMixin:
             return
         os.makedirs(FACES_DIR, exist_ok=True)
         self.tts.say(f"Okay {OWNER_NAME}, look at my nose for ten seconds.")
-        cascade = self._face_cascade(cv2)
         got = 0
+        embeddings = []
         t0 = time.time()
         while time.time() - t0 < 12 and got < 20:
             bgr, gray = self._grab_gray(cv2)
-            faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(80, 80))
+            faces = self.detect_faces(cv2, bgr, gray)
             if len(faces) > 0:
                 face = max(faces, key=lambda f: f[2] * f[3])
                 crop = self._crop_face(cv2, gray, face)
+                if crop is None:
+                    time.sleep(0.1)
+                    continue
                 cv2.imwrite(os.path.join(
                     FACES_DIR, f"owner_{int(time.time() * 1000)}.png"), crop)
+                embedding = self._face_embedding(cv2, bgr, face)
+                if embedding is not None:
+                    embeddings.append(embedding)
                 got += 1
             time.sleep(0.3)
         self._owner_samples = None  # force reload with the new samples
+        if embeddings:
+            import numpy as np
+            np.save(OWNER_EMBEDDINGS, np.asarray(embeddings))
+            self._owner_embeddings = None
         if got >= 8:
             if hasattr(self, "memory"):
                 self.memory.note_owner_learned(name=OWNER_NAME, sample_count=got)
@@ -363,6 +519,11 @@ class AbilitiesMixin:
         else:
             self.tts.say("I could not see your face well. Try again with more light.")
         print(f"learn face: saved {got} samples to {FACES_DIR}")
+
+    def learn_voice(self):
+        ok, message = self.voice_identity.enroll(self.tts.say)
+        print(f"learn voice: {message}")
+        self.tts.say(message)
 
     # ---------- guard mode ----------
     def start_guard(self):
@@ -389,15 +550,20 @@ class AbilitiesMixin:
     def _guard_loop(self):
         import cv2
         os.makedirs(GUARD_DIR, exist_ok=True)
-        cascade = self._face_cascade(cv2)
+        os.makedirs(VISITOR_FACES_DIR, exist_ok=True)
+        self._purge_expired_visitor_data()
         # face forward and hold still so frame-difference means real motion
         self.dog.head_move([[0, 0, 0]], pitch_comp=self.action_flow.head_pitch_init,
                            immediately=True, speed=80)
         self.dog.rgb_strip.set_mode('breath', 'red', 0.5)
         prev = None
         last_alert = 0
+        next_cleanup = time.time() + 3600
         try:
             while self.guard_on:
+                if time.time() >= next_cleanup:
+                    self._purge_expired_visitor_data()
+                    next_cleanup = time.time() + 3600
                 bgr, gray = self._grab_gray(cv2)
                 small = cv2.GaussianBlur(cv2.resize(gray, (160, 120)), (5, 5), 0)
                 motion = False
@@ -405,11 +571,11 @@ class AbilitiesMixin:
                     diff = cv2.absdiff(small, prev)
                     motion = int((diff > 28).sum()) > 350  # ~2% of pixels changed
                 prev = small
-                faces = cascade.detectMultiScale(gray, 1.2, 4, minSize=(60, 60))
+                faces = self.detect_faces(cv2, bgr, gray)
                 now = time.time()
                 if (motion or len(faces) > 0) and now - last_alert > self.GUARD_ALERT_COOLDOWN:
                     last_alert = now
-                    owner = any(self._is_owner(cv2, gray, f) for f in faces)
+                    owner = any(self._is_owner(cv2, gray, f, bgr) for f in faces)
                     ts = time.strftime("%Y-%m-%d_%H%M%S")
                     path = os.path.join(GUARD_DIR, f"{ts}.jpg")
                     cv2.imwrite(path, bgr)
@@ -419,6 +585,11 @@ class AbilitiesMixin:
                         print(f"guard: owner recognized, photo {path}")
                         self.action_flow.add_action("wag tail")
                     else:
+                        for index, face in enumerate(faces):
+                            crop = self._crop_face(cv2, gray, face)
+                            if crop is not None:
+                                cv2.imwrite(os.path.join(
+                                    VISITOR_FACES_DIR, f"{ts}_{index}.png"), crop)
                         print(f"GUARD ALERT: motion={motion} faces={len(faces)} photo {path}")
                         self.action_flow.add_action("bark harder")
                 time.sleep(0.25)
@@ -428,73 +599,3 @@ class AbilitiesMixin:
         finally:
             self.dog.rgb_strip.close()
 
-    # ---------- fetch: find and walk to the red ball ----------
-    def start_fetch(self):
-        if getattr(self, "fetch_on", False):
-            return
-        if getattr(self, "picam2", None) is None:
-            print("fetch: no camera")
-            return
-        self.fetch_on = True
-        self.fetch_thread = threading.Thread(
-            name="fetch_loop", target=self._fetch_loop, daemon=True)
-        self.fetch_thread.start()
-        print("fetch: looking for the red ball")
-
-    def stop_fetch(self):
-        if not getattr(self, "fetch_on", False):
-            return
-        self.fetch_on = False
-        if self.fetch_thread is not None and self.fetch_thread is not threading.current_thread():
-            self.fetch_thread.join(timeout=4)
-        self.fetch_thread = None
-        print("fetch: OFF")
-
-    def _fetch_loop(self):
-        import cv2
-        import numpy as np
-        t0 = time.time()
-        # look slightly down so the floor is in frame
-        self.dog.head_move([[0, 0, -25]], pitch_comp=0, immediately=True, speed=80)
-        last_search_turn = 0
-        try:
-            while self.fetch_on and time.time() - t0 < 90:
-                bgr, _ = self._grab_gray(cv2)
-                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-                m1 = cv2.inRange(hsv, (0, 120, 70), (10, 255, 255))
-                m2 = cv2.inRange(hsv, (170, 120, 70), (180, 255, 255))
-                mask = cv2.morphologyEx(m1 | m2, cv2.MORPH_OPEN,
-                                        np.ones((5, 5), np.uint8))
-                cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                           cv2.CHAIN_APPROX_SIMPLE)
-                ball = max(cnts, key=cv2.contourArea) if cnts else None
-                area = cv2.contourArea(ball) if ball is not None else 0
-                if area < 250:
-                    # no ball in sight: turn in place occasionally to search
-                    if time.time() - last_search_turn > 2.0:
-                        last_search_turn = time.time()
-                        self.dog.do_action('turn_left', speed=98)
-                        self.dog.wait_legs_done()
-                    time.sleep(0.1)
-                    continue
-                x, y, w, h = cv2.boundingRect(ball)
-                err = (x + w / 2.0) - 320
-                dist = self.dog.read_distance()
-                if (0 < dist < 12) or area > 30000:
-                    print("fetch: reached the ball!")
-                    self.dog.do_action('wag_tail', step_count=3, speed=100)
-                    self.dog.do_action('sit', speed=70)
-                    self.dog.wait_all_done()
-                    break
-                if err > 80:
-                    self.dog.do_action('turn_right', speed=98)
-                elif err < -80:
-                    self.dog.do_action('turn_left', speed=98)
-                else:
-                    self.dog.do_action('forward', speed=98)
-                self.dog.wait_legs_done()
-        except Exception as e:
-            print(f"fetch loop error: {e}")
-        finally:
-            self.fetch_on = False
-            print("fetch: done")

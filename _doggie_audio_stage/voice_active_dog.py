@@ -110,8 +110,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     HUMAN_FEATURE_INTERVAL_S = 0.80
     TORSO_PERSON_CONFIDENCE = 0.90
     COMMAND_LISTEN_SILENCE = 1.35
-    # Allow two more seconds for a complete command after the wake response.
-    COMMAND_LISTEN_MAX_SECONDS = 10.0
+    COMMAND_LISTEN_MAX_SECONDS = 8.0
     # This is a one-shot conversational window, not an indefinite listen.
     # Four seconds gives a person time to begin a natural reply after TTS.
     FOLLOW_UP_LISTEN_SECONDS = 4.0
@@ -194,11 +193,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "connection status",
         "what network",
         "which network",
-        "what is your ip address",
-        "what's your ip address",
-        "what is your ip",
-        "what's your ip",
-        "tell me your ip address",
         "battery status",
         "battery level",
         "how much battery",
@@ -206,40 +200,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "status report",
         "doggie status",
     )
-    WIFI_SCAN_PATTERNS = (
-        "scan wifi",
-        "scan wi fi",
-        "scan for wifi",
-        "scan for wi fi",
-        "list wifi",
-        "list wi fi",
-        "list hotspots",
-        "list hot spots",
-        "available wifi",
-        "available wi fi",
-        "available hotspots",
-        "available hot spots",
-        "find wifi",
-        "find wi fi",
-        "find hotspots",
-        "find hot spots",
-        "what wifi networks",
-        "what wi fi networks",
-        "what hotspots",
-        "what hot spots",
-        "what networks are available",
-        "which networks are available",
-        "show available networks",
-        "can you connect to any other networks",
-        "can you connect to another network",
-        "connect to another network",
-        "other wifi networks",
-        "other wi fi networks",
-    )
     # The web panel deliberately exposes only stationary, low-risk actions.
     # Any walking or free-form AI command still has to come through voice.
     WEB_COMMANDS = {
-        "listen": "__web_listen_once__",
         "stop": "stop",
         "sit": "sit",
         "stand": "stand",
@@ -250,7 +213,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         "howl": "howl",
         "wag tail": "wag tail",
         "shake head": "shake head",
-        # Disabled until the pose is validated with a timeout/recovery guard.
+        # Stretch has been removed from the web panel after a hardware stall.
+        # It remains possible to add back only after validating the pose on
+        # this specific build and adding a timeout/recovery guard.
         "nod": "nod",
         "head down": "head down",
         "prepare shutdown": "safe shutdown",
@@ -304,7 +269,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 intrinsics.update_with_defaults()
                 cam = Picamera2(ai_camera.camera_num)
                 cam.configure(cam.create_preview_configuration(
-                    main={"size": (960, 720)}, buffer_count=8,
+                    main={"size": (640, 480)}, buffer_count=8,
                     controls={"FrameRate": intrinsics.inference_rate}))
                 ai_camera.show_network_fw_progress_bar()
                 cam.start()
@@ -385,8 +350,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         self._wake_prefix_until = 0.0
         self._speech_active = False
         self._queued_follow_up = None
-        self._wifi_scan_choices = []
-        self._wifi_scan_at = 0.0
         self._shutdown_status = {"state": "idle", "detail": ""}
         self.add_trigger(self.trigger_web_command)
         self.add_trigger(self.trigger_follow_up)
@@ -408,14 +371,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         # what was heard on a normal line so it is readable in the journal.
         import types
         def _heard_wake_word_substring(stt_self, print_callback=None):
-            try:
-                result = stt_self.listen(stream=False)
-            except _sd.PortAudioError as exc:
-                # Keep a temporary device-busy race from killing the wake
-                # thread. It will retry after the one-shot listener exits.
-                print(f"wake microphone temporarily unavailable: {exc}")
-                _time.sleep(0.25)
-                return False
+            result = stt_self.listen(stream=False)
             if result is None:
                 return False
             self._remember_sound_direction()
@@ -444,7 +400,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         import queue as _queue
         import time as _time
         import sounddevice as _sd
-        self._sounddevice = _sd
 
         def _remember_audio(chunks, sample_rate):
             self._last_stt_audio = b"".join(chunks)
@@ -584,9 +539,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 # additional 5 degrees back/up: -10 standing/lying, -30 sitting.
                 rest_pitch = -10
                 sit_pitch = -30
-                downward_pitch_limit = -35
-                sit_person_upward_pitch = 20
-                sit_face_upward_pitch = 25
+                sit_person_upward_pitch = 10
+                sit_face_upward_pitch = 15
                 self.dog.head_stop()
 
                 self.action_flow = ActionFlow(self.dog)
@@ -620,11 +574,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 def limited_head_move(target_yrps, roll_comp=0, pitch_comp=0,
                                       immediately=True, speed=50):
                     # In PiDog coordinates positive target pitch is upward.
-                    # Looking down is safe in every posture. Stand/lie have
-                    # no extra rear/up range; sitting gets a moderate window
-                    # after a confirmed person or face lock.
+                    # Stand/lie have no extra upward range. Sitting can use
+                    # the 10-degree look-up window after a confirmed person
+                    # lock to find or continue following that person's face.
+                    downward_limit = -5 if getattr(
+                        self, "_face_tracking_locked", False) else 0
                     safe_targets = [[target[0], 0,
-                                     max(downward_pitch_limit,
+                                     max(downward_limit,
                                          min(upward_pitch_limit(), target[2]))]
                                     for target in target_yrps]
                     original_head_move(safe_targets,
@@ -635,9 +591,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                                           speed=50):
                     safe_pitch = current_safe_pitch()
                     safe_targets = [[target[0], 0,
-                                     max(safe_pitch + downward_pitch_limit,
-                                         min(safe_pitch + upward_pitch_limit(),
-                                             target[2]))]
+                                     max(safe_pitch, min(safe_pitch + upward_pitch_limit(),
+                                                         target[2]))]
                                     for target in target_angles]
                     original_head_move_raw(safe_targets, immediately=immediately,
                                           speed=speed)
@@ -656,9 +611,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     set_safe_forward_head()
 
                 self.action_flow.change_poseture = change_posture_with_safe_head
-                print("head safety limiter enabled: down=35 degrees in every posture; "
-                      "seated person up=20, seated face up=25 degrees; "
-                      "stand/lie stay forward; rest=-10, sit=-30")
+                print("head safety limiter enabled: seated person search=10 degrees, "
+                      "seated face lock=15 degrees; stand/lie stay forward; "
+                      "rest=-10, sit=-30")
             else:
                 self.action_flow = ActionFlow(self.dog)
             time.sleep(1)
@@ -1378,10 +1333,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 self._face_tracking_locked = face_locked
                 self._tracked_at = time.monotonic()
                 self._search_yaw = yaw
-                frame_center_x = frame.shape[1] / 2.0
-                frame_center_y = frame.shape[0] / 2.0
-                ex = (x + w / 2.0) - frame_center_x
-                ey = (y + h / 2.0) - frame_center_y
+                ex = (x + w / 2.0) - 320
+                ey = (y + h / 2.0) - 240
                 # Rate-limit each correction and use lower servo speed. This
                 # turns the former snap-to-box behavior into a smooth chase.
                 if abs(ex) > 15:
@@ -1389,12 +1342,13 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     yaw = max(-80, min(80, yaw))
                 if abs(ey) > 25:
                     pitch += max(-0.75, min(0.75, -ey * 0.015))
-                    upward_limit = (25 if face_locked
+                    upward_limit = (15 if face_locked
                                     and self.action_flow.posture == Posetures.SIT
-                                    else 20 if person_locked
+                                    else 10 if person_locked
                                     and self.action_flow.posture == Posetures.SIT
                                     else 0)
-                    pitch = max(-35, min(upward_limit, pitch))
+                    pitch = max(-5 if face_locked else 0,
+                                min(upward_limit, pitch))
                 self.dog.head_move([[yaw, 0, pitch]], pitch_comp=-35,
                                    immediately=True, speed=42)
                 time.sleep(0.08)
@@ -1634,40 +1588,9 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         if not text:
             print("(woke but heard nothing -- back to listening)")
             return ''
-        if text == "__web_listen_once__":
-            # The authenticated web button bypasses only the wake phrase. It
-            # still uses the normal microphone, owner verification, silence
-            # endpoint, hard timeout, conversation processing, and TTS path.
-            print("web listen: one-shot microphone window opened")
-            self.stt.stop_listening()
-            wake_thread = getattr(self.stt, "wake_word_thread", None)
-            if (wake_thread is not None
-                    and wake_thread is not threading.current_thread()):
-                wake_thread.join(timeout=2.0)
-            if wake_thread is not None and wake_thread.is_alive():
-                print("web listen: wake listener did not release microphone")
-                return "My microphone is busy. Please press listen again.\nACTIONS:"
-            try:
-                heard = self.listen()
-            except self._sounddevice.PortAudioError as exc:
-                print(f"web listen: microphone unavailable: {exc}")
-                self._cmd_listening = False
-                self.dog.rgb_strip.close()
-                return "My microphone is busy. Please press listen again.\nACTIONS:"
-            if not heard:
-                print("web listen: timed out without a request")
-                return "I did not hear a request.\nACTIONS:"
-            self.on_heard(heard)
-            return self.think(heard, disable_image=False)
         if not self._voice_and_face_authorized(text):
             return "I heard you, but I need my owner's voice before I can follow commands."
         self._last_user_text = text
-        if self._is_wifi_scan_query(text):
-            return self._build_wifi_scan_reply()
-        if self._wifi_scan_choices and time.monotonic() - self._wifi_scan_at < 90:
-            selection_reply = self._handle_wifi_selection(text)
-            if selection_reply is not None:
-                return selection_reply
         direct_action = self._direct_action_for_text(text)
         if direct_action is not None:
             return f"\nACTIONS: {direct_action}"
@@ -1801,11 +1724,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         return any(pattern in normalized for pattern in cls.STATUS_REPORT_PATTERNS)
 
     @classmethod
-    def _is_wifi_scan_query(cls, text: str) -> bool:
-        normalized = cls._normalize_phrase(text)
-        return any(pattern in normalized for pattern in cls.WIFI_SCAN_PATTERNS)
-
-    @classmethod
     def _direct_action_for_text(cls, text: str) -> str | None:
         normalized = cls._normalize_phrase(text)
         padded = f" {normalized} "
@@ -1926,197 +1844,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
         except (OSError, subprocess.SubprocessError):
             return {"connected": "unknown", "internet": None, "ssid": None, "signal": None, "ip": None}
 
-    @staticmethod
-    def _saved_wifi_profiles() -> dict[str, str]:
-        """Return SSID-to-UUID mappings without reading stored secrets."""
-        profiles = {}
-        try:
-            result = subprocess.run(
-                ["nmcli", "-t", "-f", "UUID,TYPE", "connection", "show"],
-                capture_output=True, text=True, timeout=5, check=True,
-            )
-            for line in result.stdout.splitlines():
-                uuid, _, connection_type = line.partition(":")
-                if connection_type != "802-11-wireless":
-                    continue
-                ssid_result = subprocess.run(
-                    ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "uuid", uuid],
-                    capture_output=True, text=True, timeout=3, check=False,
-                )
-                ssid = ssid_result.stdout.strip()
-                if ssid:
-                    profiles.setdefault(ssid, uuid)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        return profiles
-
-    def _scan_wifi_choices(self) -> list[dict[str, object]]:
-        """Return at most five strongest unique hotspots with safe metadata."""
-        saved = self._saved_wifi_profiles()
-        try:
-            result = subprocess.run(
-                ["nmcli", "-t", "--escape", "no", "-f", "SSID,SIGNAL,SECURITY",
-                 "device", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"],
-                capture_output=True, text=True, timeout=12, check=True,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return []
-
-        strongest = {}
-        for line in result.stdout.splitlines():
-            parts = line.rsplit(":", 2)
-            if len(parts) != 3:
-                continue
-            ssid, signal_text, security = parts
-            if not ssid.strip():
-                continue
-            try:
-                signal = int(signal_text)
-            except ValueError:
-                continue
-            previous = strongest.get(ssid)
-            if previous is None or signal > previous["signal"]:
-                is_open = security.strip() in {"", "--", "NONE"}
-                strongest[ssid] = {
-                    "ssid": ssid,
-                    "spoken": self._safe_spoken_value(ssid) or "unnamed network",
-                    "signal": signal,
-                    "security": security.strip(),
-                    "saved_uuid": saved.get(ssid),
-                    "connectable": bool(saved.get(ssid) or is_open),
-                    "open": is_open,
-                }
-        return sorted(strongest.values(), key=lambda item: item["signal"], reverse=True)[:5]
-
-    @staticmethod
-    def _active_wifi_profile() -> dict[str, str] | None:
-        """Return the active wlan0 connection without exposing credentials."""
-        try:
-            result = subprocess.run(
-                ["nmcli", "-g", "GENERAL.CONNECTION,GENERAL.CON-UUID", "device", "show", "wlan0"],
-                capture_output=True, text=True, timeout=5, check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        values = [line.strip() for line in result.stdout.splitlines()]
-        if result.returncode != 0 or len(values) < 2 or not values[1] or values[1] == "--":
-            return None
-        name = values[0] if values[0] and values[0] != "--" else "current network"
-        return {"name": name, "uuid": values[1]}
-
-    def _build_wifi_scan_reply(self) -> str:
-        choices = self._scan_wifi_choices()
-        self._wifi_scan_choices = choices
-        self._wifi_scan_at = time.monotonic()
-        if not choices:
-            return "I could not find any Wi-Fi hotspots right now. Would you like me to scan again?\nACTIONS:"
-
-        descriptions = []
-        for number, choice in enumerate(choices, 1):
-            if choice["saved_uuid"]:
-                availability = "saved and ready"
-            elif choice["open"]:
-                availability = "open and ready"
-            else:
-                availability = "password not saved"
-            descriptions.append(
-                f"Number {number}, {choice['spoken']}, {choice['signal']} percent, {availability}."
-            )
-        return (
-            "Here are the strongest hotspots. " + " ".join(descriptions)
-            + " Which hotspot should I connect to?\nACTIONS:"
-        )
-
-    def _handle_wifi_selection(self, text: str) -> str | None:
-        """Resolve a numbered/named follow-up and connect only when authorized."""
-        normalized = self._normalize_phrase(text)
-        if any(phrase in normalized for phrase in ("cancel", "never mind", "nevermind", "stay connected")):
-            self._wifi_scan_choices = []
-            return "Okay, I will keep my current Wi-Fi connection.\nACTIONS:"
-
-        number_words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
-        selected = None
-        digit_match = re.search(r"\b([1-5])\b", normalized)
-        if digit_match:
-            index = int(digit_match.group(1)) - 1
-            if index < len(self._wifi_scan_choices):
-                selected = self._wifi_scan_choices[index]
-        if selected is None:
-            for word, number in number_words.items():
-                if re.search(rf"\b{word}\b", normalized) and number <= len(self._wifi_scan_choices):
-                    selected = self._wifi_scan_choices[number - 1]
-                    break
-        if selected is None:
-            for choice in self._wifi_scan_choices:
-                if self._normalize_phrase(str(choice["ssid"])) in normalized:
-                    selected = choice
-                    break
-        if selected is None:
-            return "I did not recognize that hotspot. Please say its number or name?\nACTIONS:"
-        if not selected["connectable"]:
-            return (
-                f"I can see {selected['spoken']}, but I do not have its password saved. "
-                "Please choose a network marked ready?\nACTIONS:"
-            )
-
-        previous = self._active_wifi_profile()
-        target_uuid = str(selected["saved_uuid"] or "")
-        if previous and (
-            (target_uuid and target_uuid == previous["uuid"])
-            or self._normalize_phrase(str(selected["ssid"])) == self._normalize_phrase(previous["name"])
-        ):
-            self._wifi_scan_choices = []
-            return f"I am already connected to {selected['spoken']}.\nACTIONS:"
-
-        if selected["saved_uuid"]:
-            command = ["nmcli", "connection", "up", "uuid", target_uuid, "ifname", "wlan0"]
-        else:
-            command = ["nmcli", "device", "wifi", "connect", str(selected["ssid"]), "ifname", "wlan0"]
-
-        previous_spoken = self._safe_spoken_value(previous["name"]) if previous else "my current network"
-        try:
-            if previous:
-                self.tts.say(f"Disconnecting from {previous_spoken}.")
-                subprocess.run(
-                    ["nmcli", "connection", "down", "uuid", previous["uuid"]],
-                    capture_output=True, text=True, timeout=12, check=False,
-                )
-            self.tts.say(f"Connecting to {selected['spoken']}.")
-            result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
-        except (OSError, subprocess.SubprocessError):
-            result = None
-
-        if result is not None and result.returncode == 0:
-            self._wifi_scan_choices = []
-            network = self._get_network_status()
-            if network.get("ip"):
-                return (
-                    f"Connected to {selected['spoken']}. My IP address is "
-                    f"{network['ip']}.\nACTIONS:"
-                )
-            return f"Connected to {selected['spoken']}, but I could not read my IP address yet.\nACTIONS:"
-
-        if previous:
-            self.tts.say(f"Connection failed. Reconnecting to {previous_spoken}.")
-            try:
-                restored = subprocess.run(
-                    ["nmcli", "connection", "up", "uuid", previous["uuid"], "ifname", "wlan0"],
-                    capture_output=True, text=True, timeout=30, check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                restored = None
-            if restored is not None and restored.returncode == 0:
-                self._wifi_scan_choices = []
-                return (
-                    f"I could not connect to {selected['spoken']}, so I reconnected to "
-                    f"{previous_spoken}.\nACTIONS:"
-                )
-            return (
-                f"I could not connect to {selected['spoken']} or restore {previous_spoken}. "
-                "Please check my network locally.\nACTIONS:"
-            )
-        return f"I could not connect to {selected['spoken']}. Would you like another hotspot?\nACTIONS:"
-
     def _build_status_report_reply(self) -> str:
         network = self._get_network_status()
         parts = []
@@ -2153,9 +1880,6 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
             parts.append(f"Doggie is connected to {network_name}, but has no internet access.")
         else:
             parts.append("Doggie is offline.")
-
-        if network["connected"] == "yes" and network.get("ip"):
-            parts.append(f"Doggie's IP address is {network['ip']}.")
 
         volts, pct = self.read_battery()
         if volts is not None and pct is not None:
@@ -2201,7 +1925,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Frame-Options", "DENY")
-                self.send_header("Content-Security-Policy", "default-src 'self'; img-src http:; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+                self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -2242,39 +1966,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                     page = b'''<!doctype html><title>Doggie Control</title><style>body{font:16px system-ui;max-width:420px;margin:4rem auto;background:#101827;color:#eef;padding:1rem}input,button{font:inherit;padding:.7rem;margin:.4rem 0;width:100%;box-sizing:border-box}button{background:#38bdf8;border:0;border-radius:.4rem}</style><h1>Doggie Control</h1><p>Private control panel. Sign in with your password.</p><form method="post" action="/login"><input type="password" name="password" autocomplete="current-password" placeholder="Password" required><button>Sign in</button></form>'''
                     self._send(200, page, "text/html; charset=utf-8")
                     return
-                page = b'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doggie Safe Controller</title><style>*{box-sizing:border-box}body{margin:0;background:#07101b;color:#eef;font:16px system-ui;overflow:hidden}.camera{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:.45}.ui{position:relative;min-height:100vh;padding:1rem;display:flex;align-items:end;justify-content:space-between;background:linear-gradient(transparent 35%,#06101ddd)}h1{position:absolute;top:.5rem;left:1rem;font-size:1rem}.pad{display:grid;grid-template:repeat(3,58px)/repeat(3,58px);gap:5px}.pad button{font-size:20px}.up{grid-column:2}.left{grid-column:1;grid-row:2}.mid{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}button{border:1px solid #7dd3fc;border-radius:16px;background:#0e2947e8;color:#fff;touch-action:manipulation}button:active{background:#0284c7}button:disabled{opacity:.35}.rightside{display:flex;align-items:end;gap:1rem}.actions{display:grid;grid-template-columns:repeat(2,76px);gap:6px}.actions button{height:58px;font-size:12px;font-weight:700}.actions .listen{grid-column:1/-1;background:#075985}.label{text-align:center;font-size:11px;margin:0 0 5px}.note{position:absolute;top:2.5rem;left:1rem;right:1rem;font-size:12px;max-width:42rem}@media(max-width:620px){.ui{padding:.7rem}.pad{grid-template:repeat(3,50px)/repeat(3,50px)}.actions{grid-template-columns:repeat(2,68px)}.actions button{height:50px}.rightside{gap:.5rem}}</style><img class="camera" id="camera" alt="Doggie live camera"><main class="ui"><h1>Doggie Safe Controller</h1><p class="note">Uses Doggie's normal command path. Walking and unrestricted head movement stay locked for safety.</p><section><p class="label">BODY</p><div class="pad"><button class="up" data-command="stand">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="stop">&#9632;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="lie down">&#9660;</button></div></section><section class="rightside"><div><p class="label">HEAD (SAFE)</p><div class="pad"><button class="up" data-command="nod">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="shake head">&#9679;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="head down">&#9660;</button></div></div><div><p class="label">ACTIONS</p><div class="actions"><button data-command="sit">SIT</button><button data-command="stand">STAND</button><button data-command="bark">BARK</button><button data-command="lie down">LAY DOWN</button><button class="listen" data-command="listen">LISTEN</button></div></div></section></main><p id="result" style="position:fixed;bottom:.5rem;left:50%;transform:translateX(-50%);margin:0"></p><script>document.getElementById('camera').src='http://'+window.location.hostname+':8080/stream';async function send(c){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:c})});const d=await r.json();document.getElementById('result').textContent=d.status||d.error||'Request failed'}document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>send(b.dataset.command))</script>'''
-                responsive_css = b'''<style>
-body{overflow:auto;min-height:100svh}
-.ui{min-height:100svh;height:auto;padding-bottom:max(1rem,env(safe-area-inset-bottom));gap:1rem}
-button{min-width:48px;min-height:48px}
-@media(max-width:760px){
-  .ui{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-end;
-      gap:.65rem;padding:5.2rem .75rem max(3.25rem,calc(env(safe-area-inset-bottom) + 2.5rem))}
-  .ui>section:first-of-type{align-self:center}
-  .rightside{display:grid;grid-template-columns:minmax(150px,1fr) minmax(142px,1fr);
-             align-items:end;justify-items:center;gap:.75rem;width:100%}
-  .pad{grid-template:repeat(3,48px)/repeat(3,48px);gap:5px}
-  .actions{grid-template-columns:repeat(2,minmax(64px,1fr));width:100%;max-width:180px}
-  .actions button{height:48px;min-width:0}
-  .label{margin-bottom:4px}
-  .note{top:2.2rem;font-size:11px;line-height:1.25}
-}
-@media(max-width:350px){
-  .rightside{grid-template-columns:1fr;gap:.5rem}
-  .ui{padding-top:5.6rem}
-}
-@media(max-height:560px) and (orientation:landscape){
-  .ui{display:grid;grid-template-columns:repeat(3,max-content);align-items:end;
-      justify-content:space-around;padding-top:4.2rem;overflow:auto}
-  .ui>section:first-of-type{align-self:end}
-  .rightside{display:contents}
-  .pad{grid-template:repeat(3,44px)/repeat(3,44px)}
-  .actions button{height:44px;min-height:44px}
-}
-</style>'''
-                page = page.replace(b"</head>", responsive_css + b"</head>", 1)
-                if responsive_css not in page:
-                    page = page.replace(b"</style>", b"</style>" + responsive_css, 1)
+                page = b'''<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doggie Safe Controller</title><style>*{box-sizing:border-box}body{margin:0;background:#07101b;color:#eef;font:16px system-ui;overflow:hidden}.camera{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:.45}.ui{position:relative;min-height:100vh;padding:1rem;display:flex;align-items:end;justify-content:space-between;background:linear-gradient(transparent 35%,#06101ddd)}h1{position:absolute;top:.5rem;left:1rem;font-size:1rem}.pad{display:grid;grid-template:repeat(3,58px)/repeat(3,58px);gap:5px}.pad button{font-size:20px}.up{grid-column:2}.left{grid-column:1;grid-row:2}.mid{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}button{border:1px solid #7dd3fc;border-radius:16px;background:#0e2947e8;color:#fff;touch-action:manipulation}button:active{background:#0284c7}button:disabled{opacity:.35}.rightside{display:flex;align-items:end;gap:1rem}.actions{display:grid;grid-template-columns:repeat(2,58px);gap:6px}.actions button{height:58px;font-weight:700}.label{text-align:center;font-size:11px;margin:0 0 5px}.note{position:absolute;top:2.5rem;left:1rem;right:1rem;font-size:12px;max-width:42rem}@media(max-width:620px){.ui{padding:.7rem}.pad{grid-template:repeat(3,50px)/repeat(3,50px)}.actions{grid-template-columns:repeat(2,50px)}.rightside{gap:.5rem}}</style><img class="camera" id="camera" alt="Doggie live camera"><main class="ui"><h1>Doggie Safe Controller</h1><p class="note">Uses Doggie's normal command path. Walking and unrestricted head movement stay locked for safety.</p><section><p class="label">BODY</p><div class="pad"><button class="up" data-command="stand">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="stop">&#9632;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="lie down">&#9660;</button></div></section><section class="rightside"><div><p class="label">HEAD (SAFE)</p><div class="pad"><button class="up" data-command="nod">&#9650;</button><button class="left" disabled>&#9664;</button><button class="mid" data-command="shake head">&#9679;</button><button class="right" disabled>&#9654;</button><button class="down" data-command="head down">&#9660;</button></div></div><div><p class="label">ACTIONS</p><div class="actions"><button data-command="bark">A</button><button data-command="wag tail">B</button><button data-command="sit">Y</button><button data-command="status report">Z</button></div></div></section></main><p id="result" style="position:fixed;bottom:.5rem;left:50%;transform:translateX(-50%);margin:0"></p><script>document.getElementById('camera').src='http://'+window.location.hostname+':8080/stream';async function send(c){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:c})});const d=await r.json();document.getElementById('result').textContent=d.status||d.error||'Request failed'}document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>send(b.dataset.command))</script>'''
                 self._send(200, page, "text/html; charset=utf-8")
 
             def do_POST(self) -> None:
@@ -2339,7 +2031,10 @@ button{min-width:48px;min-height:48px}
             def log_message(self, format, *args):
                 return
 
-        host = os.environ.get("DOGGIE_CONTROL_HOST", "127.0.0.1").strip()
+        # The controller is intended for a phone/laptop on Doggie's LAN.
+        # Bind all interfaces by default; firewall/router policy should keep
+        # port 8093 local rather than making the service loopback-only.
+        host = os.environ.get("DOGGIE_CONTROL_HOST", "0.0.0.0").strip()
         if host not in {"127.0.0.1", "0.0.0.0"}:
             print("web control disabled: DOGGIE_CONTROL_HOST must be 127.0.0.1 or 0.0.0.0")
             return

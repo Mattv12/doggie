@@ -110,7 +110,8 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
     HUMAN_FEATURE_INTERVAL_S = 0.80
     TORSO_PERSON_CONFIDENCE = 0.90
     COMMAND_LISTEN_SILENCE = 1.35
-    COMMAND_LISTEN_MAX_SECONDS = 8.0
+    # Allow two more seconds for a complete command after the wake response.
+    COMMAND_LISTEN_MAX_SECONDS = 10.0
     # This is a one-shot conversational window, not an indefinite listen.
     # Four seconds gives a person time to begin a natural reply after TTS.
     FOLLOW_UP_LISTEN_SECONDS = 4.0

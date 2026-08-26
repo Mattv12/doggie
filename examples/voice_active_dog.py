@@ -267,7 +267,7 @@ class VoiceActiveDog(AbilitiesMixin, VoiceAssistant):
                 intrinsics.update_with_defaults()
                 cam = Picamera2(ai_camera.camera_num)
                 cam.configure(cam.create_preview_configuration(
-                    main={"size": (640, 480)}, buffer_count=8,
+                    main={"size": (960, 720)}, buffer_count=8,
                     controls={"FrameRate": intrinsics.inference_rate}))
                 ai_camera.show_network_fw_progress_bar()
                 cam.start()

@@ -14,12 +14,15 @@ Environment=LOGNAME=matt
 Environment=DOGGIE_REPO_DIR=/home/matt/pidog
 Environment=DOGGIE_REPO_OWNER=matt
 Environment=DOGGIE_BRANCH=main
-Environment=DOGGIE_NETWORK_TIMEOUT=20
+# Doggie can run locally without internet.  Keep an unavailable Wi-Fi network
+# from delaying the voice service for a full boot-time timeout.
+Environment=DOGGIE_NETWORK_TIMEOUT=5
 Environment=DOGGIE_PULL_TIMEOUT=25
 Environment=DOGGIE_START_DELAY=8
 Environment=DOGGIE_BOOT_RETRIES=3
 Environment=DOGGIE_BOOT_RETRY_DELAY=5
-TimeoutStartSec=70
+# Allow for a slow first PiDog controller initialization and its retries.
+TimeoutStartSec=120
 TimeoutStopSec=15
 Nice=-10
 CPUWeight=800
